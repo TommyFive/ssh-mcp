@@ -98,7 +98,10 @@ describe.skipIf(!available)('E2E — approval gate', () => {
     expect((await e2e.callTool('read-command', { command: 'whoami' })).isError).toBeFalsy();
     expect((await e2e.callTool('read-command', { command: 'pwd' })).isError).toBeFalsy();
 
-    const blocked = await e2e.callTool('read-command', { command: 'hostname' });
+    // Keep this a command that is intrinsically read-only. `hostname` used to
+    // be admitted by the broad viewer allowlist, but can also set a hostname on
+    // several platforms and is deliberately no longer classified as read-only.
+    const blocked = await e2e.callTool('read-command', { command: 'id' });
     expect(blocked.isError).toBe(true);
     expect(textOf(blocked)).toContain('QUOTA_EXCEEDED');
   }, 40000);
