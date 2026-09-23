@@ -5,6 +5,16 @@ on:
     branches: [main, v2]
   pull_request:
     branches: [main, v2]
+  # Makes the identical required-check suite re-runnable without a no-op commit,
+  # e.g. after a transient registry or runner failure.
+  workflow_dispatch:
+
+# A newer commit supersedes an older pending run for the same branch. Keeping
+# pull requests responsive matters more than spending runners on a revision
+# that can no longer be merged; runs on different branches remain independent.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 # Read-only default for GITHUB_TOKEN. A job that declares nothing — the `test`
 # job does not — would otherwise inherit the repository setting, which lives
@@ -327,7 +337,11 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: npm audit
-        run: npm audit --audit-level=high || true
+        # `npm ci` proves the lockfile is reproducible; this additionally blocks
+        # known high/critical vulnerabilities in the resolved dependency tree.
+        # Do not mask its exit code: an advisory that is only printed cannot
+        # protect a pull request or a release.
+        run: npm audit --audit-level=high
 
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4 (branch, not a tag)
