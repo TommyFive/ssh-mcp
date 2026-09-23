@@ -1,4 +1,4 @@
-import type { CommandClass, ParsedCommand } from '../types.js';
+import type { CommandClass, ParsedCommand, ReadOnlyExtension } from '../types.js';
 import { AWK_NAMES, readAwkInvocation, type AwkFindings } from './awk.js';
 
 /**
@@ -22,16 +22,59 @@ const SHELL_CONTROL_CHARS = /[;&|<>`$(){}\n\r]/;
 
 const READ_ONLY_ALLOWLIST = new Set([
   'ls', 'cat', 'grep', 'find', 'stat', 'df', 'du', 'head', 'tail', 'wc',
-  'ps', 'uname', 'uptime', 'hostname', 'id', 'who', 'whoami', 'date',
+  'ps', 'uname', 'uptime', 'id', 'who', 'whoami',
   'printenv', 'pwd', 'echo', 'printf', 'test', 'true', 'false',
   'which', 'whereis', 'file', 'readlink', 'realpath', 'basename', 'dirname',
-  'seq', 'sort', 'uniq', 'cut', 'tr', 'diff', 'comm',
-  'systemctl status', 'journalctl', 'docker ps', 'docker logs', 'docker inspect',
-  'docker stats', 'docker images', 'free', 'top', 'htop', 'iostat', 'vmstat',
-  'netstat', 'ss', 'ifconfig', 'ip addr', 'ip route', 'arp', 'dig', 'nslookup',
-  'host', 'ping', 'traceroute', 'git status', 'git log',
-  'git diff', 'git branch', 'git show', 'git remote',
+  'seq', 'cut', 'tr', 'diff', 'comm',
+  'free', 'top', 'htop', 'iostat', 'vmstat',
+  'netstat', 'dig', 'nslookup', 'host',
 ]);
+
+const READ_ONLY_EXTENSION_MATCHERS: Record<ReadOnlyExtension, readonly RegExp[]> = {
+  'openwrt-diagnostics': [/^lsusb(?: -t)?$/, /^dmesg(?: -T)?$/, /^logread$/, /^mwan3 (?:status|interfaces)$/,
+    /^ifstatus [A-Za-z0-9_.-]+$/, /^ubus call (?:system board|system info|network\.wireless status|network\.interface dump|network\.interface\.[A-Za-z0-9_.-]+ status|service list)$/,
+    /^uci (?:show|get)(?: [A-Za-z0-9_@./-]+)?$/, /^ip(?: -[46])? (?:-brief|-br) (?:link|addr)$/,
+    /^ip(?: -[46])? (?:addr|route|rule|neigh)(?: (?:show|list))?$/, /^ethtool [A-Za-z0-9_.:-]+$/,
+    /^iw dev$/, /^iwinfo(?: [A-Za-z0-9_.:-]+ info)?$/, /^opkg list-installed$/, /^mount$/, /^wg show$/,
+    /^block info$/, /^nft list ruleset$/, /^ip(?:6)?tables (?:-S|-L -n -v)$/],
+  'tailscale-diagnostics': [/^tailscale (?:status|netcheck)$/],
+  'linux-network-diagnostics': [/^ip(?: -[46])? (?:-brief|-br) (?:link|addr)$/,
+    /^ip(?: -[46])? (?:addr|route|rule|neigh)(?: (?:show|list))?$/, /^ss -lntup$/, /^nft list ruleset$/, /^ip(?:6)?tables (?:-S|-L -n -v)$/],
+  'linux-service-diagnostics': [/^systemctl (?:is-active|is-enabled|is-failed) [A-Za-z0-9_.@-]+$/, /^systemctl (?:list-units|list-timers)$/,
+    /^systemctl status [A-Za-z0-9_.@-]+ --no-pager$/, /^systemctl show [A-Za-z0-9_.@-]+ --property=(?:ActiveState|SubState|MainPID|ExecMainStatus)$/,
+    /^journalctl --disk-usage$/, /^journalctl -u [A-Za-z0-9_.@-]+ -n (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500) --no-pager$/,
+    /^fail2ban-client status(?: [A-Za-z0-9_.-]+)?$/, /^docker (?:ps|images)$/, /^docker inspect [A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/,
+    /^docker logs --tail (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500) --no-color [A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/, /^docker stats --no-stream$/],
+  'linux-storage-diagnostics': [/^mount$/, /^findmnt(?: --json|-rn)$/, /^lsblk --json --output NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS$/],
+  'linux-login-diagnostics': [/^last reboot$/, /^last -n (?:[1-9]|[1-9][0-9]|1[0-9]{2}|200)$/, /^lastlog$/],
+  'linux-process-diagnostics': [/^dmesg(?: -T)?$/, /^lsof -nP -i(?:TCP)?(?: -sTCP:LISTEN)?$/],
+  'singbox-diagnostics': [/^sing-box version$/, /^sing-box check -c \/etc\/sing-box\/config\.json$/],
+  'macos-network-diagnostics': [/^scutil --(?:dns|proxy|nwi)$/, /^scutil --get (?:ComputerName|HostName|LocalHostName)$/,
+    /^networksetup (?:-listallhardwareports|-listallnetworkservices)$/, /^networksetup -(?:getinfo|getdnsservers|getwebproxy|getsecurewebproxy|getautoproxyurl|getairportnetwork|getnetworkserviceenabled) [A-Za-z0-9_.-]+$/,
+    /^ifconfig(?: -a|-l| [A-Za-z0-9_.:-]+)?$/, /^route -n get [A-Za-z0-9_.:-]+$/],
+  'macos-system-diagnostics': [/^sw_vers(?: -(?:productName|productVersion|buildVersion))?$/, /^hostname$/, /^date$/, /^launchctl list$/,
+    /^launchctl print (?:system|gui\/501)\/[A-Za-z0-9_.-]+$/, /^defaults read(?: [A-Za-z0-9_./~-]+(?: [A-Za-z0-9_.-]+)?)?$/,
+    /^sysctl (?:-a|-n [A-Za-z0-9_.]+|[A-Za-z0-9_.]+)$/, /^mount$/, /^lsof(?: -nP -i(?:TCP|UDP)?(?: -sTCP:LISTEN)?|-p [0-9]+)?$/,
+    /^\/usr\/bin\/log show --last [1-9][0-9]{0,3}[smhd](?: --style (?:compact|syslog|json))?$/, /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js --version$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js status(?: --(?:all|json|usage|verbose|debug|deep)| --timeout [0-9]{1,6})*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js health(?: --(?:json|verbose|debug)| --timeout [0-9]{1,6})*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js sessions(?: list)?(?: --(?:all-agents|json|verbose)| --active [0-9]{1,6}| --agent [A-Za-z0-9_.-]+| --limit (?:all|[0-9]{1,5}))*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js models (?:status|list)(?: --(?:json|plain|all|local|check|probe)| --agent [A-Za-z0-9_.-]+| --provider [A-Za-z0-9_.-]+| --probe-(?:concurrency|max-tokens|timeout) [0-9]{1,7}| --probe-(?:profile|provider) [A-Za-z0-9_.@,-]+)*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js gateway (?:status|health|probe)(?: --(?:deep|json|no-probe|require-rpc|expect-final|ssh-auto)| --(?:port|timeout) [0-9]{1,6})*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js gateway stability(?: --(?:json|expect-final)| --(?:limit|since-seq|timeout|port) [0-9]{1,8}| --type [A-Za-z0-9_.-]+)*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js gateway usage-cost(?: --(?:json|expect-final|all-agents)| --(?:days|port|timeout) [0-9]{1,6}| --agent [A-Za-z0-9_.-]+)*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js channels status(?: --(?:json|probe)| --channel [A-Za-z0-9_.-]+| --timeout [0-9]{1,6})*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js plugins list(?: --(?:enabled|json|verbose))*$/,
+    /^\/opt\/homebrew\/opt\/node@24\/bin\/node \/opt\/homebrew\/lib\/node_modules\/openclaw\/dist\/index\.js skills list(?: --(?:eligible|json|verbose)| -v| --agent [A-Za-z0-9_.-]+)*$/,
+    /^diskutil list$/, /^diskutil apfs list$/, /^diskutil info disk[0-9]+(?:s[0-9]+)?$/, /^tmutil (?:status|destinationinfo)$/,
+    /^pmset -g$/, /^ioreg -l$/, /^system_profiler SP[A-Za-z0-9]+DataType$/, /^softwareupdate --history$/, /^fdesetup status$/,
+    /^csrutil status$/, /^spctl --status$/, /^profiles status -type enrollment$/, /^systemextensionsctl list$/, /^kmutil showloaded$/, /^mdutil -s \/$/],
+};
+
+function isExtensionReadOnly(command: string, extensions: readonly ReadOnlyExtension[]): boolean {
+  return !SHELL_CONTROL_CHARS.test(command)
+    && extensions.some((extension) => READ_ONLY_EXTENSION_MATCHERS[extension].some((matcher) => matcher.test(command)));
+}
 // Deliberately NOT read-only: `env`, because it is an exec wrapper. `env <cmd>`
 // runs <cmd>, so allowlisting the name `env` vouched for a command the
 // classifier never looked at — `env sudo rm -f /etc/passwd` classified
@@ -552,7 +595,7 @@ const EXEC_WRAPPERS = new Set([
 // Null-prototype for the same reason as INTERPRETERS: indexed by the command word.
 const DISQUALIFYING_ARGS: Record<string, RegExp> = Object.assign(
   Object.create(null) as Record<string, RegExp>,
-  { find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fls)$/ },
+  { find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fls)$/, sort: /^(?:-o|--output(?:=.*)?)$/ },
 );
 
 /** A leading `NAME=value`, which a shell treats as an assignment, not a command. */
@@ -715,9 +758,21 @@ function elevatedBinaryOf(command: string): string | null {
  */
 
 
+function uniqWritesOutput(args: string[]): boolean {
+  let positional = 0;
+  const consumesValue = new Set(['-f', '--skip-fields', '-s', '--skip-chars', '-w', '--check-chars']);
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (consumesValue.has(arg)) { i++; continue; }
+    if (/^--(?:skip-fields|skip-chars|check-chars)=/.test(arg) || arg.startsWith('-')) continue;
+    positional++;
+  }
+  return positional >= 2;
+}
 /** An allowlisted binary carrying a flag that makes it write or execute. */
 function hasDisqualifyingArgs(command: string): boolean {
   return parseSegments(command).some(({ head, args }) => {
+    if (head === 'uniq' && uniqWritesOutput(args)) return true;
     const rule = DISQUALIFYING_ARGS[head];
     return rule !== undefined && args.some((arg) => rule.test(arg));
   });
@@ -1224,7 +1279,7 @@ function syntheticVerb(command: string): string {
  * `privileged`, which on `prod` is the difference between a prompt and a refusal.
  * Taking the maximum is what makes the scan unable to lower anything.
  */
-export function classifyCommand(command: string, depth = 0): ParsedCommand {
+export function classifyCommand(command: string, extensions: readonly ReadOnlyExtension[] = [], depth = 0): ParsedCommand {
   const trimmed = command.trim();
   const outer = classifyOuter(trimmed);
 
@@ -1247,13 +1302,16 @@ export function classifyCommand(command: string, depth = 0): ParsedCommand {
   }
 
   for (const inner of nestedCommands(trimmed)) {
-    const parsed = classifyCommand(inner, depth + 1);
+    const parsed = classifyCommand(inner, extensions, depth + 1);
     // `binary` follows the winning side deliberately: it is what the audit record and
     // the refusal message name, and naming the outer `echo` would describe the wrong
     // process as the one that ran as root.
     if (CLASS_RANK[parsed.class] > CLASS_RANK[highest.class]) highest = parsed;
   }
 
+  if (highest.class === 'safe' && isExtensionReadOnly(trimmed, extensions)) {
+    return { binary: highest.binary, fullCommand: trimmed, class: 'read-only' as CommandClass };
+  }
   return { binary: highest.binary, fullCommand: trimmed, class: highest.class };
 }
 

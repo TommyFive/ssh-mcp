@@ -40,9 +40,9 @@ describe('command substitution is not read-only', () => {
     'cat /etc/hostname',
     'df -h',
     'grep error /var/log/syslog',
-    'systemctl status nginx',
+    'systemctl status nginx --no-pager',
   ])('still allows %s', (command) => {
-    expect(classifyCommand(command).class).toBe('read-only');
+    expect(classifyCommand(command, ['linux-service-diagnostics']).class).toBe('read-only');
   });
 });
 

@@ -16,6 +16,7 @@ const readOnlyAuditor: Profile = {
   name: 'prod-audit', host: '10.0.0.5', port: 22, user: 'audit', auth: 'agent', tty: false,
   timeout: 60_000, maxChars: 5000, maxOutputBytes: 1_048_576,
   role: 'viewer', group: 'prod', readOnly: true, approvalPolicy: 'ask-destructive',
+  readOnlyExtensions: ['linux-service-diagnostics'],
   cert: false, sessionMaxPerConnection: 5, sessionIdleTimeoutMs: 600_000,
   sessionBackgroundMaxMs: 3_600_000, commandQuotaPerDay: 0,
   transferMaxBytes: 268_435_456, transferTimeoutMs: 300_000,
@@ -40,7 +41,7 @@ describe('a readOnly profile cannot write, whatever the command is called', () =
 
   it('still permits the reading it exists for', () => {
     for (const command of ['ls -la /var/www', 'cat /etc/hosts', 'grep sudo /var/log/auth.log',
-                           'find /etc -name "*.conf"', 'journalctl -u sshd']) {
+                           'find /etc -name "*.conf"', 'journalctl -u sshd -n 200 --no-pager']) {
       expect(refused(command)).toBe('allow');
     }
   });

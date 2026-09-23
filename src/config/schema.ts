@@ -3,6 +3,12 @@ import { z } from 'zod';
 const authMethodSchema = z.enum(['agent', 'key', 'password', 'keychain']);
 const approvalModeSchema = z.enum(['auto', 'ask-destructive', 'ask-all', 'deny']);
 const commandClassSchema = z.enum(['read-only', 'safe', 'destructive', 'privileged']);
+const readOnlyExtensionSchema = z.enum([
+  'openwrt-diagnostics', 'tailscale-diagnostics', 'linux-network-diagnostics',
+  'linux-service-diagnostics', 'linux-storage-diagnostics', 'linux-login-diagnostics',
+  'linux-process-diagnostics', 'singbox-diagnostics', 'macos-network-diagnostics',
+  'macos-system-diagnostics',
+]);
 
 /**
  * Role and tier names, which are free strings so operators can define their own.
@@ -173,6 +179,7 @@ export const profileSchema = z.object({
   tty: z.boolean().default(false),
   role: z.string().default('operator'),
   readOnly: z.boolean().default(false),
+  readOnlyExtensions: z.array(readOnlyExtensionSchema).default([]),
   cert: z.boolean().default(false),
   // A schema-level default rather than a [defaults] entry, like tty/readOnly/cert
   // above: which hosts an operator trusts with the announcement is a property of

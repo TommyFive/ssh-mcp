@@ -22,6 +22,24 @@
 npm install -g ssh-mcp
 ```
 
+### Install the hardened TommyFive viewer build
+
+The `TommyFive/ssh-mcp` fork contains the argument-bounded viewer extensions
+used by the Mac mini deployment. Install the tagged build directly from GitHub:
+
+```bash
+npm install -g git+https://github.com/TommyFive/ssh-mcp.git#v2.11.0-readonly-extension.3
+```
+
+Verify it with:
+
+```bash
+npm list -g ssh-mcp --depth=0
+```
+
+The fork keeps viewer permissions closed: profiles can select only named
+`readOnlyExtensions`, never arbitrary command regexes.
+
 ### 2. Configure
 
 Without a config the server still starts, so a client or directory can complete the MCP
@@ -526,7 +544,8 @@ never widen. Widening happens here or not at all.
 
 Every command is classified before execution:
 
-- **read-only**: Allowlisted commands (`ls`, `cat`, `grep`, `df`, `stat`, `systemctl status`, ...)
+- **read-only**: Allowlisted commands plus enabled, argument-bounded
+  diagnostic extensions (`ls`, `cat`, `grep`, `df`, `stat`, ...)
 - **safe**: Non-destructive mutations (`npm install`, `git pull`, ...)
 - **destructive**: mutations that need approval (`rm -rf /tmp/build`, ...)
 - **privileged**: `sudo`, `su`, `doas`, `pkexec`

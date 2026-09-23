@@ -2,13 +2,14 @@ import { describe, it, expect } from 'vitest';
 import { classifyCommand, extractBinary, isForbidden } from '../../../src/policy/classifier.js';
 
 describe('classifyCommand', () => {
-  it('classifies allowlisted commands as read-only', () => {
+  it('classifies generic and argument-bounded diagnostics as read-only', () => {
+    const linux = ['linux-service-diagnostics'] as const;
     expect(classifyCommand('ls -la').class).toBe('read-only');
     expect(classifyCommand('cat /etc/hosts').class).toBe('read-only');
     expect(classifyCommand('grep error /var/log/syslog').class).toBe('read-only');
     expect(classifyCommand('df -h').class).toBe('read-only');
-    expect(classifyCommand('systemctl status nginx').class).toBe('read-only');
-    expect(classifyCommand('docker ps').class).toBe('read-only');
+    expect(classifyCommand('systemctl status nginx --no-pager', linux).class).toBe('read-only');
+    expect(classifyCommand('docker ps', linux).class).toBe('read-only');
   });
 
   it('classifies sudo/su/doas as privileged', () => {
@@ -36,6 +37,31 @@ describe('classifyCommand', () => {
   it('classifies echo with redirect as safe (not read-only)', () => {
     expect(classifyCommand('echo hello > /tmp/file').class).toBe('safe');
     expect(classifyCommand('echo hello').class).toBe('read-only');
+  });
+
+  it('only promotes enabled diagnostic extensions with safe arguments', () => {
+    const linux = ['linux-service-diagnostics', 'linux-storage-diagnostics', 'linux-login-diagnostics', 'linux-process-diagnostics'] as const;
+    const openwrt = ['openwrt-diagnostics'] as const;
+    const macos = ['macos-network-diagnostics', 'macos-system-diagnostics'] as const;
+    expect(classifyCommand('journalctl -u ssh.service -n 200 --no-pager', linux).class).toBe('read-only');
+    expect(classifyCommand('journalctl --vacuum-time=1s', linux).class).toBe('safe');
+    expect(classifyCommand('docker logs --tail 500 --no-color api', linux).class).toBe('read-only');
+    expect(classifyCommand('docker logs --follow api', linux).class).toBe('safe');
+    expect(classifyCommand('last -n 200', linux).class).toBe('read-only');
+    expect(classifyCommand('last -n 201', linux).class).toBe('safe');
+    expect(classifyCommand('lsof -nP -iTCP -sTCP:LISTEN', linux).class).toBe('read-only');
+    expect(classifyCommand('logread', openwrt).class).toBe('read-only');
+    expect(classifyCommand('logread -f', openwrt).class).toBe('safe');
+    expect(classifyCommand('sw_vers -productVersion', macos).class).toBe('read-only');
+    expect(classifyCommand('ifconfig en0', macos).class).toBe('read-only');
+    expect(classifyCommand('ifconfig en0 down', macos).class).toBe('safe');
+    expect(classifyCommand('defaults read com.apple.finder', macos).class).toBe('read-only');
+    expect(classifyCommand('defaults write com.apple.finder ShowAllFiles -bool true', macos).class).toBe('safe');
+  });
+
+  it('blocks generic sort and uniq write forms', () => {
+    expect(classifyCommand('sort -o output input').class).toBe('destructive');
+    expect(classifyCommand('uniq input output').class).toBe('destructive');
   });
 
   it('handles sudo prefix in binary extraction', () => {
@@ -232,7 +258,7 @@ describe('elevation and exec wrappers (GHSA-6f54-mjqq-2jp8)', () => {
     expect(classifyCommand('grep sudo /var/log/auth.log').class).toBe('read-only');
     expect(classifyCommand('cat /etc/sudoers').class).toBe('read-only');
     expect(classifyCommand('ls -la /usr/bin/sudo').class).toBe('read-only');
-    expect(classifyCommand('journalctl -u sudo').class).toBe('read-only');
+    expect(classifyCommand('journalctl -u sudo -n 200 --no-pager', ['linux-service-diagnostics']).class).toBe('read-only');
     expect(classifyCommand('find /etc -name "*.conf"').class).toBe('read-only');
     expect(classifyCommand('find /var/log -type f').class).toBe('read-only');
     expect(classifyCommand('printenv').class).toBe('read-only');

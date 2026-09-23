@@ -2,6 +2,17 @@
 
 export type AuthMethod = 'agent' | 'key' | 'password' | 'keychain';
 export type ApprovalMode = 'auto' | 'ask-destructive' | 'ask-all' | 'deny';
+export type ReadOnlyExtension =
+  | 'openwrt-diagnostics'
+  | 'tailscale-diagnostics'
+  | 'linux-network-diagnostics'
+  | 'linux-service-diagnostics'
+  | 'linux-storage-diagnostics'
+  | 'linux-login-diagnostics'
+  | 'linux-process-diagnostics'
+  | 'singbox-diagnostics'
+  | 'macos-network-diagnostics'
+  | 'macos-system-diagnostics';
 
 export interface Profile {
   name: string;
@@ -22,6 +33,8 @@ export interface Profile {
   maxOutputBytes: number;
   role: string;
   readOnly: boolean;
+  /** Named, built-in, argument-checked read-only command packs. */
+  readOnlyExtensions?: ReadOnlyExtension[];
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
