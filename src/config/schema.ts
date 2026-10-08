@@ -158,7 +158,7 @@ export const defaultsSchema = z.object({
 
 /** Exact remote POSIX file paths. Never prefixes, globs, relative paths or '..'. */
 export function isExactSftpGrantPath(path: string): boolean {
-  return /^\\/(?:[A-Za-z0-9_@+.-]+\\/)*[A-Za-z0-9_@+.-]+$/.test(path)
+  return /^\/(?:[A-Za-z0-9_@+.-]+\/)*[A-Za-z0-9_@+.-]+$/.test(path)
     && path.split('/').every(piece => piece !== '.' && piece !== '..');
 }
 
