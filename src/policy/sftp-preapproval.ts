@@ -1,4 +1,4 @@
-import { readFileSync, statSync } from 'node:fs';
+import { readFileSync, lstatSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { isExactSftpGrantPath } from '../config/schema.js';
@@ -20,8 +20,8 @@ export function readLocalSftpUploadGrant(profileName: string): SftpUploadGrant |
   const file = process.env.SSH_MCP_SFTP_GRANT_FILE || DEFAULT_GRANT_FILE;
   if (!isAbsolute(file)) return undefined;
   try {
-    const dir = statSync(dirname(file));
-    const stat = statSync(file);
+    const dir = lstatSync(dirname(file));
+    const stat = lstatSync(file);
     if (!dir.isDirectory() || (dir.mode & 0o077) !== 0 ||
         !stat.isFile() || (stat.mode & 0o077) !== 0 ||
         stat.uid !== process.getuid?.() || dir.uid !== process.getuid?.() ||
