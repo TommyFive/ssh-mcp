@@ -156,6 +156,24 @@ export const defaultsSchema = z.object({
   transferTimeoutMs: z.number().int().positive().max(2_147_483_647).default(300_000),
 }).strict();
 
+/** Exact remote POSIX file paths. Never prefixes, globs, relative paths or '..'. */
+export function isExactSftpGrantPath(path: string): boolean {
+  return /^\\/(?:[A-Za-z0-9_@+.-]+\\/)*[A-Za-z0-9_@+.-]+$/.test(path)
+    && path.split('/').every(piece => piece !== '.' && piece !== '..');
+}
+
+const sftpUploadPreapprovalSchema = z.object({
+  paths: z.array(z.string().refine(isExactSftpGrantPath, 'must be an exact absolute POSIX file path, without dot components')).min(1).max(16),
+  issuedAt: z.string().datetime({ offset: true }),
+  expiresAt: z.string().datetime({ offset: true }),
+  maxBytes: z.number().int().positive().max(1_048_576).default(65_536),
+}).strict().superRefine((v, ctx) => {
+  const duration = Date.parse(v.expiresAt) - Date.parse(v.issuedAt);
+  if (!Number.isFinite(duration) || duration <= 0 || duration > 30 * 60_000) {
+    ctx.addIssue({ code: 'custom', path: ['expiresAt'], message: 'approval must expire within 30 minutes after issuedAt' });
+  }
+});
+
 export const profileSchema = z.object({
   name: z.string().min(1),
   host: z.string().min(1),
@@ -184,6 +202,7 @@ export const profileSchema = z.object({
   readOnlyExtensions: z.array(readOnlyExtensionSchema).default([]),
   viewer2Packs: z.array(z.enum(['linux', 'network', 'vpn', 'openwrt', 'macos', 'icmp'])).default([]),
   viewer2ProbeTargets: z.array(z.string().refine(isSafeProbeTarget, 'must be a permitted literal IPv4/IPv6 address')).max(32).default([]),
+  sftpUploadPreapproval: sftpUploadPreapprovalSchema.optional(),
   cert: z.boolean().default(false),
   // A schema-level default rather than a [defaults] entry, like tty/readOnly/cert
   // above: which hosts an operator trusts with the announcement is a property of
