@@ -111,6 +111,23 @@ The independent operator issued the exact-path 30-minute SFTP canary grant and `
 
 **Next attempt:** only after green CI on the latest exact PR commit, use the existing independent Mac mini SSH/Tailscale terminal to run the corrected helper's `preflight` and `activate`. The time-limited SFTP grant might need to be **reissued** before performing the live exact-file upload. Keep the independent session open, check the new process and live SFTP upload+download and audit, and roll back immediately if a gate fails. Do not run a fresh activation from the SSH-MCP tunnel being replaced.
 
+## Third canary rollout: live accepted, no regression (2026-10-08)
+
+Operator issued a fresh independent-terminal grant bound to `mac-mini-admin`, exact file `/Users/rentamac/.cache/ssh-mcp-restore-check/sftp-canary.txt`, size limit 1024 bytes, expiration `2026-10-08T09:00:57.290Z`. Corrected `viewer2-cutover-f1314bf.sh` passed the **15/15** preflight checks, then printed `ACTIVATED` after the operator supplied `INDEPENDENT-ACTIVATE`.
+
+Actual ChatGPT SSH-MCP connector was immediately used for post-cutover acceptance:
+
+- Live installed package `2.11.0-readonly-extension.3` from `/opt/homebrew/lib/node_modules/ssh-mcp/package.json`.
+- Tunnel-client restarted successfully with `node /opt/homebrew/bin/ssh-mcp --config=...`; 23 configured profiles discovered, including Viewer/Admin.
+- **Real connector upload succeeded** with `mac-mini-admin` to the sole granted file: 89 bytes. Same connector read back exactly the expected text.
+- Upload audit: `commandClass=destructive`, `decision=allow`, `ruleId=out-of-band-sftp-preapproval`, `approver=operator-owned-30min-sftp-grant`, `exitCode=0`. Download audited as `read-only`, `allow`.
+- Admin `run-command` with `/opt/homebrew/bin/node --version` succeeded. Viewer `hostname` on local Mac mini and remote Salty VPS succeeded.
+- A second Admin SFTP upload with a **different, not preapproved file path** was denied (client lacks elicitation, fails closed). No forbidden file was created. Its audit captured `require-approval` / `approval-policy`.
+- Viewer SFTP upload to the canary path denied `POLICY_DENIED` (cannot inherit Admin's grant). Viewer `touch` denied `POLICY_DENIED` and audited `deny` / `role-binding`. Neither test created a file.
+- Corrected rollback state marker `viewer2-active-rollback-path` exists with protected mode `0600`; previously installed 2.2.5 package retained as `/opt/homebrew/lib/node_modules/.ssh-mcp-prev-20261008T083103Z`; prior full package/config/launchd archive untouched.
+
+**Conclusion: the original approval/elicitation regression, the rollback-path placeholder defect, the rebuilt package startup and the live restricted SFTP acceptance tests are resolved. Live candidate is operational.** The 30-minute canary grant is an intentionally temporary authorization; it expires by time even if its file stays on disk. It does *not* enable general admin uploads or restore implicit unrestricted destructive writes. Viewer2 diagnostic packs are still opt-in per profile and have not yet been activated. Keep rollback available until operational acceptance is complete. Full cryptographic WebAuthn authorization remains a separate scope.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
