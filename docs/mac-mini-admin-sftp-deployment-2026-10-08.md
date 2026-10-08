@@ -1,5 +1,8 @@
 # Mac mini 2026-10-08 Admin SFTP deployment and rollback
 
+> **Deployed and verified on 2026-10-08:** The operator ran `prepare`, which passed 23-profile validation and left the live service unchanged, then `activate` successfully from an **independent Tailscale SSH terminal**. LaunchAgent restarted with new tunnel/client processes. ChatGPT SSH-MCP verified the active compiled scope rule and `O_NOFOLLOW` implementation; `list-connections` reported 23 profiles (13 Viewer/10 Admin). A 167-byte `mac-mini-admin` SFTP canary was read back via Viewer. A Viewer upload failed with `POLICY_DENIED` and created no file. Audit: `admin-sftp-workspace-scope` allow, `role-binding` deny. The preexisting OpenClaw `documentation/ssh-mcp-tunnel/README.md` was successfully updated via the scoped Admin SFTP flow (9,610 bytes, `0600`). Protected snapshot: `~/.local/share/ssh-mcp-backups/admin-sftp-62089183`; immediate prior binary: `/opt/homebrew/lib/node_modules/.ssh-mcp-sftp-prev-62089183`. **Retain these backups; no rollback required.** The remainder below documents the executable procedure for future recovery/history.
+
+
 This operator script is **intentionally out-of-band**. It must run from an independent Tailscale-SSH terminal on the Mac mini, never through SSH-MCP while replacing its own tunnel process.
 
 Source: [deploy-mac-mini-admin-sftp-20261008.sh](../scripts/deploy-mac-mini-admin-sftp-20261008.sh).
