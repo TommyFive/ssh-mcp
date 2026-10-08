@@ -28,6 +28,61 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
   };
 }
 
+describe('Scoped time-limited admin SFTP preapproval (no client elicitation)', () => {
+  const engine = new PolicyEngine(DEFAULT_RULES);
+  const path = '/Users/example/.cache/ssh-mcp-test/probe.txt';
+  const command = (p = path, bytes = 16) =>
+    `sftp:upload --overwrite --bytes=${bytes} --sha256=${'a'.repeat(32)} ${p}`;
+  const now = Date.now();
+  const grant = {
+    paths: [path], issuedAt: new Date(now - 60_000).toISOString(),
+    expiresAt: new Date(now + 10 * 60_000).toISOString(), maxBytes: 2048,
+  };
+  const admin = makeProfile({
+    name: 'mac-mini-admin', role: 'admin', group: 'dev', readOnly: false,
+    approvalPolicy: 'ask-destructive', sftpUploadPreapproval: grant,
+  });
+  it('keeps destructive classification, but allows only exact preapproved upload tool+path', () => {
+    const allowed = engine.evaluate(command(), admin, 'sftp-upload');
+    expect(allowed).toMatchObject({
+      decision: 'allow', commandClass: 'destructive',
+      ruleId: 'out-of-band-sftp-preapproval',
+    });
+    expect(engine.evaluate(command(), admin, 'run-command').decision).not.toBe('allow');
+    expect(engine.evaluate(command(path + '.other'), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate(command('/Users/example/.cache/ssh-mcp-test/../ssh-mcp-test/probe.txt'), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate(command(path, 2049), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate('rm -rf /tmp/not-an-upload', admin, 'run-command').decision).not.toBe('allow');
+  });
+  it('rejects expired, future, oversized-window and absent approvals', () => {
+    const windows = [
+      { ...grant, issuedAt: new Date(now - 3600_000).toISOString(), expiresAt: new Date(now - 1000).toISOString() },
+      { ...grant, issuedAt: new Date(now + 60_000).toISOString(), expiresAt: new Date(now + 120_000).toISOString() },
+      { ...grant, issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3600_000).toISOString() },
+    ];
+    for (const g of windows) {
+      expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: g }, 'sftp-upload').decision).toBe('require-approval');
+    }
+    expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: undefined }, 'sftp-upload').decision).toBe('require-approval');
+  });
+  it('never bypasses Viewer, Operator, approval-policy deny or role binding', () => {
+    for (const profile of [
+      { ...admin, role: 'viewer', readOnly: true },
+      { ...admin, role: 'operator' },
+      { ...admin, approvalPolicy: 'deny' as const },
+      { ...admin, group: 'prod', role: 'viewer', readOnly: false },
+    ]) {
+      expect(engine.evaluate(command(), profile, 'sftp-upload').decision).toBe('deny');
+    }
+  });
+  it('does not bypass user denylist or other SFTP classes', () => {
+    const deny = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['ssh-mcp-test/probe'] });
+    expect(deny.evaluate(command(), admin, 'sftp-upload').decision).toBe('deny');
+    expect(engine.evaluate('sftp:upload-file --overwrite /tmp/a', admin, 'sftp-upload-file').decision).not.toBe('allow');
+    expect(engine.evaluate('sftp:download-file /tmp/a', admin, 'sftp-download-file').decision).not.toBe('allow');
+  });
+});
+
 describe('PolicyEngine', () => {
   const engine = new PolicyEngine(DEFAULT_RULES);
 
