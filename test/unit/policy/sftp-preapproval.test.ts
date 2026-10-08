@@ -3,6 +3,8 @@ import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readLocalSftpUploadGrant, hasValidSftpUploadGrant } from '../../../src/policy/sftp-preapproval.js';
+import { PolicyEngine, DEFAULT_RULES } from '../../../src/policy/engine.js';
+import type { Profile } from '../../../src/types.js';
 const original = process.env.SSH_MCP_SFTP_GRANT_FILE;
 const dirs: string[] = [];
 afterEach(() => {
@@ -32,6 +34,22 @@ describe('owner-only short-lived local SFTP preapprovals', () => {
     expect(hasValidSftpUploadGrant(cmd(), grant!)).toBe(true);
     expect(hasValidSftpUploadGrant(cmd(path+'-bad'), grant!)).toBe(false);
     expect(readLocalSftpUploadGrant('r5s-changchun-admin')).toBeUndefined();
+  });
+  it('authorizes a destructive admin SFTP via central policy with no elicitation', () => {
+    const f = make();
+    const profile = {name:'mac-mini-admin',role:'admin',group:'dev',
+      readOnly:false,approvalPolicy:'ask-destructive'} as Profile;
+    const engine = new PolicyEngine(DEFAULT_RULES);
+    const approved = engine.evaluate(cmd(), profile, 'sftp-upload');
+    expect(approved).toMatchObject({
+      decision:'allow', commandClass:'destructive',
+      ruleId:'out-of-band-sftp-preapproval',
+    });
+    expect(engine.evaluate(cmd(), profile, 'run-command').decision).not.toBe('allow');
+    expect(engine.evaluate(cmd(path+'-other'), profile, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate(cmd(), {...profile, role:'viewer',readOnly:true},'sftp-upload').decision).toBe('deny');
+    chmodSync(f,0o644);
+    expect(engine.evaluate(cmd(),profile,'sftp-upload').decision).toBe('require-approval');
   });
   it('rejects exposed grant files, exposed parent folders and malformed scope', () => {
     const f=make();chmodSync(f,0o644);
