@@ -51,3 +51,9 @@
 ## Manual input
 
 No manual action required for isolated development. Before production: confirm approved diagnostic egress targets and ports, verify Mac mini alternate recovery access, and explicitly approve the production rollout and any SSH profile changes.
+
+## Updated recovery and dependency preflight (2026-10-08)
+
+- User confirmed independent SSH, Tailscale SSH and Remote Desktop access to the Mac mini. Recovery route is therefore available, but a live rollback rehearsal is still outstanding.
+- Development-branch lockfile was refreshed with compatible dependency security updates on an isolated GitHub Actions runner. The vulnerable `shx` build helper and its transitive `shelljs` dependency graph were removed and replaced with a native Node chmod helper. This does **not** prove the audit is clean until the CI security-scan passes on the resulting commit.
+- No production SSH-MCP package, configuration or service has been changed.
