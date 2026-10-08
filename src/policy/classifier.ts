@@ -626,7 +626,9 @@ const EXEC_WRAPPERS = new Set([
 // Null-prototype for the same reason as INTERPRETERS: indexed by the command word.
 const DISQUALIFYING_ARGS: Record<string, RegExp> = Object.assign(
   Object.create(null) as Record<string, RegExp>,
-  { find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fls)$/, sort: /^(?:-o|--output(?:=.*)?)$/ },
+  { find: /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/,
+    file: /^(?:-C|--compile)$/,
+    sort: /^(?:-o.*|--output(?:=.*)?)$/ },
 );
 
 /** A leading `NAME=value`, which a shell treats as an assignment, not a command. */
