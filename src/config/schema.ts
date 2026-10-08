@@ -180,6 +180,7 @@ export const profileSchema = z.object({
   role: z.string().default('operator'),
   readOnly: z.boolean().default(false),
   readOnlyExtensions: z.array(readOnlyExtensionSchema).default([]),
+  viewer2Packs: z.array(z.enum(['linux', 'network', 'vpn', 'openwrt', 'macos'])).default([]),
   cert: z.boolean().default(false),
   // A schema-level default rather than a [defaults] entry, like tty/readOnly/cert
   // above: which hosts an operator trusts with the announcement is a property of
