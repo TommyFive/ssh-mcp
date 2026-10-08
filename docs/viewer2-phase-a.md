@@ -13,7 +13,7 @@
 
 ## Components included
 
-- `src/policy/viewer2.ts`: independent, deny-by-default prototype for the supported read-only command forms; **not wired into the production classifier**.
+- `src/policy/viewer2.ts`: deny-by-default positive-list read-only pack matcher, **now integrated** behind optional per-profile `viewer2Packs` (defaults to empty). No existing profile is activated or updated.
 - `src/policy/viewer2-batch.ts`: non-executing planner for up to 16 independent commands; useful for test-only evaluation.
 - `src/tools/viewer2-batch-tool.ts`: optional MCP read-commands-batch tool; every command individually uses the **existing** `runAudited()` central pipeline, the **existing** classifier, the per-profile policy and the `enforceClass: 'read-only'` rule. It does not activate the experimental matcher.
 - `src/tools/registry.ts`: registers this new tool.
@@ -31,7 +31,7 @@
 
 ## Remaining Phase A work before readiness
 
-- Integrate the opt-in Viewer 2 matcher with the *current GitHub* classifier using its public extension APIs or an additive plugin hook, without bypassing its newer nested-command defenses.
+- Confirm the newly integrated opt-in Viewer 2 matcher is covered by the full current GitHub classifier regression suite, including nested-command defenses.
 - Implement diagnostic capabilities as explicit operations with per-target allowlists and DNS-rebinding/SSRF safety. Do not disguise them as `read-only`.
 - End-to-end integration tests with simulated SSH targets, plus negative tests through all MCP entrypoints (run_command, sessions, SFTP).
 - Confirm CI typechecking, tests and package compatibility against the exact production version. A build of the newer GitHub code does not prove compatibility with the installed 2.2.5 fork.
@@ -57,3 +57,7 @@ No manual action required for isolated development. Before production: confirm a
 - User confirmed independent SSH, Tailscale SSH and Remote Desktop access to the Mac mini. Recovery route is therefore available, but a live rollback rehearsal is still outstanding.
 - Development-branch lockfile was refreshed with compatible dependency security updates on an isolated GitHub Actions runner. The vulnerable `shx` build helper and its transitive `shelljs` dependency graph were removed and replaced with a native Node chmod helper. This does **not** prove the audit is clean until the CI security-scan passes on the resulting commit.
 - No production SSH-MCP package, configuration or service has been changed.
+
+## Viewer2 opt-in configuration (source branch only)
+
+The profile schema accepts `viewer2Packs = ["linux", "network", "vpn", "openwrt", "macos"]` with only the host-specific subsets needed, e.g. `viewer2Packs = ["linux", "network", "vpn"]` for an explicitly approved Viewer host. The property defaults to `[]`, and **must not be placed into any production config until the separately gated rollout**. It does not make `safe` generally allowed, and cannot overwrite an existing `destructive`/`privileged` classification or policy denylist.
