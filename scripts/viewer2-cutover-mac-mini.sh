@@ -6,9 +6,9 @@ umask 077
 
 ROOT="/opt/homebrew/lib/node_modules"
 ACTIVE="$ROOT/ssh-mcp"
-NEXT="$ROOT/.ssh-mcp-next-568d081"
+NEXT="$ROOT/.ssh-mcp-next-8eb250d"
 BACKUP="$HOME/.[REDACTED:entropy:52]"
-PREFLIGHT="$HOME/.cache/ssh-mcp-viewer2-audit-lab/viewer2-cutover-preflight.mjs"
+PREFLIGHT="$HOME/.cache/ssh-mcp-viewer2-audit-lab/viewer2-cutover-preflight-8eb250d.mjs"
 STATE="$BACKUP/viewer2-active-rollback-path"
 LABEL="gui/$(id -u)/com.openai.tunnel-client.ssh-mcp"
 
@@ -65,7 +65,7 @@ if [ "$MODE" = "activate" ]; then
   SWITCH_STARTED=0
   trap - EXIT
   echo "ACTIVATED. Keep this independent terminal open until remote MCP checks pass."
-  echo "If any check fails: /bin/bash $HOME/.local/share/ssh-mcp-releases/viewer2-cutover-568d081.sh rollback"
+  echo "If any check fails: /bin/bash $HOME/.local/share/ssh-mcp-releases/viewer2-cutover-8eb250d.sh rollback"
   exit 0
 fi
 
