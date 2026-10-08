@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { isSafeProbeTarget } from '../policy/viewer2.js';
 
 const authMethodSchema = z.enum(['agent', 'key', 'password', 'keychain']);
 const approvalModeSchema = z.enum(['auto', 'ask-destructive', 'ask-all', 'deny']);
@@ -181,7 +182,8 @@ export const profileSchema = z.object({
   role: z.string().default('operator'),
   readOnly: z.boolean().default(false),
   readOnlyExtensions: z.array(readOnlyExtensionSchema).default([]),
-  viewer2Packs: z.array(z.enum(['linux', 'network', 'vpn', 'openwrt', 'macos'])).default([]),
+  viewer2Packs: z.array(z.enum(['linux', 'network', 'vpn', 'openwrt', 'macos', 'icmp'])).default([]),
+  viewer2ProbeTargets: z.array(z.string().refine(isSafeProbeTarget, 'must be a permitted literal IPv4/IPv6 address')).max(32).default([]),
   cert: z.boolean().default(false),
   // A schema-level default rather than a [defaults] entry, like tty/readOnly/cert
   // above: which hosts an operator trusts with the announcement is a property of
