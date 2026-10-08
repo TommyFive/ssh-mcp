@@ -41,6 +41,18 @@ export interface Profile {
   viewer2Packs?: import('./policy/viewer2.js').Viewer2Pack[];
   /** Explicit literal IPs allowed for opt-in, bounded ICMP tests. */
   viewer2ProbeTargets?: string[];
+  /**
+   * Out-of-band, one-off approval for destructive SFTP inline uploads, restricted
+   * to exact absolute destination paths and a 30-minute window. No default.
+   * The operator must update the protected config and restart the sidecar to
+   * issue a new approval; a client without MCP elicitation cannot self-approve.
+   */
+  sftpUploadPreapproval?: {
+    paths: string[];
+    issuedAt: string;
+    expiresAt: string;
+    maxBytes: number;
+  };
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
