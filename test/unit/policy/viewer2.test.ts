@@ -98,6 +98,8 @@ describe('Viewer2 staged matcher (not yet activated)', () => {
   });
   it('refuses loopback, link-local, metadata, multicast and mapped addresses', () => {
     for(const ip of ['127.0.0.1','0.0.0.0','169.254.169.254','224.0.0.1',
+                     '0:0:0:0:0:0:0:1','0:0:0:0:0:0:0:0',
+                     'FE80:0000:0000:0000:0000:0000:0000:0001',
                      '255.255.255.255','::','::1','fe80::1','ff02::1','::ffff:169.254.169.254']) {
       expect(isSafeProbeTarget(ip)).toBe(false);
     }
