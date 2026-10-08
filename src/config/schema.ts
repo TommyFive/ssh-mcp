@@ -6,7 +6,8 @@ const commandClassSchema = z.enum(['read-only', 'safe', 'destructive', 'privileg
 const readOnlyExtensionSchema = z.enum([
   'openwrt-diagnostics', 'tailscale-diagnostics', 'linux-network-diagnostics',
   'linux-service-diagnostics', 'linux-storage-diagnostics', 'linux-login-diagnostics',
-  'linux-process-diagnostics', 'singbox-diagnostics', 'macos-network-diagnostics',
+  'linux-process-diagnostics', 'linux-system-diagnostics', 'asus-merlin-diagnostics',
+  'singbox-diagnostics', 'macos-network-diagnostics',
   'macos-system-diagnostics',
 ]);
 
