@@ -327,7 +327,7 @@ export class PolicyEngine {
         && pre.maxBytes > 0 && pre.maxBytes <= 1_048_576
         && Number.isFinite(begin) && Number.isFinite(end)
         && now >= begin && now < end && end - begin <= 30 * 60_000;
-      const m = /^sftp:upload --overwrite --bytes=(0|[1-9][0-9]{0,8}) --sha256=[a-f0-9]{32} (\\/[^\\r\\n]*)$/.exec(command);
+      const m = /^sftp:upload --overwrite --bytes=(0|[1-9][0-9]{0,8}) --sha256=[a-f0-9]{32} (\/[^\r\n]*)$/.exec(command);
       if (limited && m && Number(m[1]) <= pre.maxBytes
           && pre.paths.includes(m[2]) && isExactSftpGrantPath(m[2])) {
         return { decision: 'allow', commandClass: 'destructive',
