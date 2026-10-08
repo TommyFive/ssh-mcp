@@ -8,9 +8,6 @@ const readOnlyExtensionSchema = z.enum([
   'linux-service-diagnostics', 'linux-storage-diagnostics', 'linux-login-diagnostics',
   'linux-process-diagnostics', 'singbox-diagnostics', 'macos-network-diagnostics',
   'macos-system-diagnostics',
-  'viewer2-linux-diagnostics', 'viewer2-network-diagnostics',
-  'viewer2-vpn-diagnostics', 'viewer2-openwrt-diagnostics',
-  'viewer2-macos-diagnostics',
 ]);
 
 /**
