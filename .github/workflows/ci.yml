@@ -446,7 +446,7 @@ jobs:
           # registry unit test). Nothing links them, so adding a tool means
           # editing four places and this is the one no local run catches: the
           # whole suite went green with the image still expecting eleven.
-          TOOL_COUNT: '14'
+          TOOL_COUNT: '15'
         run: |
           set -euo pipefail
           {
