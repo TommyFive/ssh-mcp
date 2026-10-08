@@ -12,6 +12,8 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
   linux: [
     /^systemctl --failed(?: --no-pager)?$/,
     /^systemctl list-timers(?: --all)? --no-pager$/,
+    /^systemctl list-units(?: --all)?(?: --type=(?:service|socket|timer))? --no-pager$/,
+
     new RegExp('^systemctl (?:is-active|is-enabled|is-failed) ' + UNIT + '(?: ' + UNIT + '){0,9}$'),
     new RegExp('^systemctl show ' + UNIT + ' -p [A-Za-z][A-Za-z0-9]{0,80}$'),
     /^journalctl --list-boots(?: --no-pager)?$/,
@@ -27,7 +29,9 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^hostname$/,
     /^date$/,
     /^dpkg --audit$/,
+    /^lsblk -f$/,
     /^apt-mark showhold$/,
+
     /^apt-cache policy [A-Za-z0-9_.+:-]+$/,
   ],
   network: [
@@ -58,8 +62,11 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^hostname$/,
     /^logread -l (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)$/,
     /^sysctl [A-Za-z0-9_.]+$/,
-    /^mwan3 (?:status|interfaces)$/,
+    /^mwan3 (?:status|interfaces|policies)$/,
+
     /^opkg list-installed$/,
+    /^opkg status [A-Za-z0-9_.+:-]{1,100}$/,
+
   ],
   macos: [
     /^pgrep -af [A-Za-z0-9_.:-]+$/,
@@ -67,6 +74,8 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^openclaw --version$/,
     /^pmset -g(?: (?:assertions|sched|custom|cap|therm|ps|batt))?$/,
     /^scutil --nc list$/,
+    /^\/Applications\/Tailscale\.app\/Contents\/MacOS\/Tailscale status(?: --json)?$/,
+
     /^scutil --nc status "[A-Za-z0-9_. -]{1,80}"$/,
   ],
 };
