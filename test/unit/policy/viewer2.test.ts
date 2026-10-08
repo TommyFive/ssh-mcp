@@ -29,7 +29,7 @@ describe('Viewer2 staged matcher (not yet activated)', () => {
     ['sysctl net.ipv4.ip_forward', ['openwrt']],
     ['pmset -g assertions', ['macos']],
     ['scutil --nc status "My VPN"', ['macos']],
-    ['getent ahostsv4 example.org', ['linux']],
+
     ['ip -d link show eth0', ['network']],
     ['ip route show table all', ['network']],
     ['nft -a list ruleset', ['network']],
@@ -54,6 +54,7 @@ describe('Viewer2 staged matcher (not yet activated)', () => {
   }
   const negative = [
     'systemctl restart sing-box',
+    'getent ahostsv4 example.org',
     'systemctl list-units --state=failed --no-pager',
     'opkg upgrade sing-box',
     'mwan3 restart',
