@@ -10,7 +10,7 @@ import { textResult } from './results.js';
  */
 export function registerReadCommandsBatch(
   { server }: ToolDeps,
-  { runAudited, execAndReport }: Pipeline,
+  { runAudited, execAndReport, auditFailure, makeCtx }: Pipeline,
 ) {
   server.tool(
     'read-commands-batch',
@@ -31,6 +31,11 @@ export function registerReadCommandsBatch(
         // cannot be smuggled across the argv -> shell-string boundary.
         const valid = argv.every(word => /^[A-Za-z0-9_.:@%/+,-]+$/.test(word));
         if (!valid) {
+          await auditFailure(
+            makeCtx(extra, profile), profile ?? '(default)',
+            { command: argv.join(' ').slice(0, 5000) }, 'read-only',
+            new Error('Batch argv contains unsupported shell syntax'),
+          );
           isError = true;
           output.push('[' + (index + 1) + '] Refused: requires shell syntax or quoting');
           continue;
