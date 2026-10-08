@@ -71,6 +71,34 @@ Do not start deployment while any of the following applies:
 - The cutover script has **no autonomous deadline watchdog**. The operator must keep a working independent SSH/Tailscale SSH session open during and after `activate` and perform `rollback` immediately if ChatGPT's MCP reconnection, viewer denials, admin behavior, or audit trail fails. Never run `activate` or `rollback` through the SSH-MCP connection being replaced.
 - Nothing was run that restarts the live tunnel or replaces the global binary; PR #1 remains Draft.
 
+## Fixed SFTP approval regression — rollout candidate 8eb250d (2026-10-08)
+
+**Root cause of failed first canary:** the 2.11 policy deliberately classifies `sftp:upload` as `destructive`. The current MCP client has no form-elicitation capability, so `ask-destructive` reliably produced `APPROVAL_UNAVAILABLE`. Version 2.2.5 historically classified upload as `safe` and permitted it without approval; that broad implicit write authority must not be restored. The independent operator terminal successfully rolled back to 2.2.5; the real post-rollback SFTP upload/read-back and its audit record succeeded.
+
+**Fix:** the 2.11 candidate now supports a tightly bounded, **out-of-band local file approval**, not a general downgrade of the SFTP classifier. In an independent Mac mini terminal the operator can run:
+
+```sh
+/opt/homebrew/bin/node ~/.local/share/ssh-mcp-releases/grant-admin-sftp.mjs mac-mini-admin /Users/rentamac/.cache/ssh-mcp-restore-check/sftp-canary.txt 1024
+```
+
+The issuer requires an interactive terminal and the explicit text `APPROVE-30M-SFTP`. It writes an owner-only 0600 file under the existing owner-only 0700 `~/.config/ssh-mcp` directory. The server dynamically validates the file on each `sftp-upload` call, so neither MCP form elicitation nor a service restart is required. The file binds the approval to **one named Admin profile, one exact absolute POSIX destination, max 1 MiB payload and at most 30 minutes**. An absent/expired/invalid/exposed grant fails closed to the normal approval path. Existing Viewer/Operator role bindings, read-only restrictions, built-in/user denylist, quota and optional OPA remain in effect. The upload stays classified `destructive`; the successful audit records the rule `out-of-band-sftp-preapproval` and approver `operator-owned-30min-sftp-grant`. No uploads to arbitrary paths are implicitly authorized.
+
+**Security limitation:** this is a time-boxed, exact-file **operator delegation**, not cryptographic 2FA or a WebAuthn assertion. It relies on ownership of the protected Mac mini account and the operational discipline of approving only expected files in an independent terminal. A WebAuthn approval broker can be integrated separately. Do not call this a permanent global Admin write grant.
+
+**Validation:** candidate TypeScript build passed. 121 targeted tests (four test files) passed, including admin policy grant, expiry, wrong profile/path/size/role, private file/directory restrictions and denial of unsafe neighbors. A prior isolated candidate completed real MCP stdio/SFTP upload/read-back when granted through a temporary profile configuration; dynamic file grants have been verified by unit/policy tests. A real dynamic-file end-to-end test on the Mac mini was not completed because the tool's safety checks blocked its execution; this remaining integration case is a mandatory **post-cutover canary** before confirming rollout. It must succeed with the actual ChatGPT MCP connector (which lacks form elicitation), or immediately roll back.
+
+**Staging:** new candidate `8eb250df754bf7f38b08268314c335868e7f4c51` is compiled into private release `~/.local/share/ssh-mcp-releases/ssh-mcp-2.11.0-8eb250d` and inactive same-volume sibling `/opt/homebrew/lib/node_modules/.ssh-mcp-next-8eb250d`. Recursive build/dependency comparisons passed. Grant module SHA-256: `13ded0f64eb763406657a0f173737d440dbb50ba73b32bc168d0db25f9f3efb9`. The new operator-only cutover script is `~/.local/share/ssh-mcp-releases/viewer2-cutover-8eb250d.sh` (also tracked at `scripts/viewer2-cutover-mac-mini.sh`). Bash syntax and **15/15** read-only preflight checks passed against this build. The original backup tar and running production SSH-MCP 2.2.5 are unchanged. **The new release is not yet active.**
+
+**Rollout procedure** (only when the exact latest PR CI is green, from an independent interactive SSH/Tailscale SSH session):
+
+1. Keep the independent terminal open and run `/bin/bash ~/.local/share/ssh-mcp-releases/viewer2-cutover-8eb250d.sh preflight`. Expect `allPass:true`.
+2. Run `/bin/bash ~/.local/share/ssh-mcp-releases/viewer2-cutover-8eb250d.sh activate` and type `INDEPENDENT-ACTIVATE`; this restarts only the SSH-MCP tunnel.
+3. Reconnect ChatGPT MCP; verify installed 2.11 version, 23 profiles, Viewer read, Viewer write denial and Admin read/run.
+4. Issue the bounded SFTP grant via independent terminal above, then use the MCP connector `sftp-upload` under `mac-mini-admin` for the **exact** approved file and verify SFTP read-back and audit rule. Do not test this by granting arbitrary directories or all Admin profiles.
+5. If this or any other gate fails, immediately run `/bin/bash ~/.local/share/ssh-mcp-releases/viewer2-cutover-8eb250d.sh rollback` in that same independent session, confirm `RESTORE-ORIGINAL`, and recheck 2.2.5.
+
+The PR remains Draft until the live canary and post-cutover audit validate the full fixed workflow.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
