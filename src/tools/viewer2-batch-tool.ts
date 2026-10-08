@@ -22,7 +22,7 @@ export function registerReadCommandsBatch(
       ).min(1).max(16).describe('Each entry is one command as literal argv words. No shell syntax.'),
       profile: z.string().optional().describe('Existing SSH viewer profile'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ commands, profile }, extra) => {
       const output: string[] = [];
       let isError = false;
