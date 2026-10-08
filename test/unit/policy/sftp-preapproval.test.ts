@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, writeFileSync, chmodSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, chmodSync, rmSync, symlinkSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readLocalSftpUploadGrant, hasValidSftpUploadGrant } from '../../../src/policy/sftp-preapproval.js';
@@ -55,6 +55,13 @@ describe('owner-only short-lived local SFTP preapprovals', () => {
     const f=make();chmodSync(f,0o644);
     expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
     chmodSync(f,0o600);chmodSync(join(f,'..'),0o755);
+    expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
+  });
+  it('rejects symlinked grant files even when the target is private', () => {
+    const original = make();
+    const moved = original + '-real';
+    renameSync(original, moved);
+    symlinkSync(moved, original);
     expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
   });
   it('rejects expired approvals, overly long windows, oversized caps and path traversal', () => {
