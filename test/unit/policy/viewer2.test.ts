@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { isViewer2ReadOnly } from '../../../src/policy/viewer2.js';
+import { isViewer2ReadOnly, isSafeProbeTarget } from '../../../src/policy/viewer2.js';
 
 describe('Viewer2 staged matcher (not yet activated)', () => {
-  const positive: [string, readonly ('linux' | 'network' | 'vpn' | 'openwrt' | 'macos')[]][] = [
+  const positive: [string, readonly ('linux' | 'network' | 'vpn' | 'openwrt' | 'macos' | 'icmp')[]][] = [
     ['wg show wg0', ['vpn']],
     ['wg show wg0 endpoints', ['vpn']],
     ['tailscale serve status', ['vpn']],
@@ -31,8 +31,6 @@ describe('Viewer2 staged matcher (not yet activated)', () => {
     ['ss -lntp', ['network']],
     ['ss -uapmni', ['network']],
     ['ss -tnp', ['network']],
-    ['ping -c 3 -W 2 1.1.1.1', ['network']],
-    ['ping -6 -c 2 -W 1 2606:4700:4700::1111', ['network']],
     ['hostname', ['linux']],
     ['date', ['linux']],
     ['ifconfig eth0', ['network']],
@@ -85,6 +83,27 @@ describe('Viewer2 staged matcher (not yet activated)', () => {
   }
   it('rejects unknown packs rather than throwing or widening privileges', () => {
     expect(isViewer2ReadOnly('wg show wg0', ['vpn', 'bogus' as never])).toBe(false);
+  });
+  it('requires BOTH the icmp pack and exact permitted IP (never DNS names)', () => {
+    expect(isViewer2ReadOnly('ping -c 3 -W 2 1.1.1.1', ['network'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -c 3 -W 2 1.1.1.1', ['network', 'icmp'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -c 3 -W 2 1.1.1.1', ['icmp'], ['1.1.1.1'])).toBe(true);
+    expect(isViewer2ReadOnly('ping -6 -c 2 -W 1 2606:4700:4700::1111', ['icmp'], ['2606:4700:4700::1111'])).toBe(true);
+    expect(isViewer2ReadOnly('ping -c 1 example.com', ['icmp'], ['example.com'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -c 1 169.254.169.254', ['icmp'], ['169.254.169.254'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -c 1 127.0.0.1', ['icmp'], ['127.0.0.1'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -c 1 10.1.2.3', ['icmp'], ['10.1.2.3'])).toBe(true);
+    expect(isViewer2ReadOnly('ping -c 1 10.1.2.4', ['icmp'], ['10.1.2.3'])).toBe(false);
+    expect(isViewer2ReadOnly('ping -6 -c 1 1.1.1.1', ['icmp'], ['1.1.1.1'])).toBe(false);
+  });
+  it('refuses loopback, link-local, metadata, multicast and mapped addresses', () => {
+    for(const ip of ['127.0.0.1','0.0.0.0','169.254.169.254','224.0.0.1',
+                     '255.255.255.255','::','::1','fe80::1','ff02::1','::ffff:169.254.169.254']) {
+      expect(isSafeProbeTarget(ip)).toBe(false);
+    }
+    for(const ip of ['1.1.1.1','10.1.2.3','172.16.1.1','2001:db8::1','fd00::1']) {
+      expect(isSafeProbeTarget(ip)).toBe(true);
+    }
   });
   it('is opt-in and grants nothing by default', () => {
     expect(isViewer2ReadOnly('wg show wg0', [])).toBe(false);
