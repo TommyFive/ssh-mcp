@@ -52,7 +52,13 @@ export function registerReadCommandsBatch(
         const lines = result.content
           .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
           .map(block => block.text);
-        output.push('[' + (index + 1) + '] ' + command + '\n' + lines.join('\n'));
+        // Cap the aggregate MCP response: each remote command already has its
+        // own output quota, but 16 responses combined could exceed that quota.
+        const remaining = Math.max(0, 262144 - output.join('\n\n').length);
+        const payload = lines.join('\n');
+        output.push('[' + (index + 1) + '] ' + command + '\n'
+          + payload.slice(0, Math.min(remaining, 32768))
+          + (payload.length > Math.min(remaining, 32768) ? '\n[output truncated]' : ''));
       }
       return { ...textResult(output.join('\n\n')), isError };
     },
