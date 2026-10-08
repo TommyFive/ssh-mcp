@@ -35,43 +35,17 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^nft -a list ruleset$/,
     /^nft (?:-a )?list (?:chain|set|map) (?:inet|ip|ip6|bridge|arp|netdev) [A-Za-z0-9_.:-]+ [A-Za-z0-9_.:-]+$/,
     new RegExp('^ethtool -(?:S|k|i) ' + NAME + '$'),
-    // Enumerate passive ss modes: -K and other socket-mutating flags are absent.
+    // Enumerate passive ss modes; socket-killing -K must never match.
     /^ss -(?:lntp|ltnp|lnup|lntup|tnp|ntp|unp|uapn|uapmni|tupn|s)$/,
-    // Bound active ICMP tests to 1-5 packets / at most 5 s per response.
-    new RegExp('^ping(?: -6)? -c [1-5](?: -W [1-5])? ' + TARGET + '
-  ],
-  vpn: [
-    new RegExp('^wg show ' + NAME + '$'),
-    new RegExp('^wg show ' + NAME + ' (?:endpoints|latest-handshakes|transfer|peers)$'),
-    /^tailscale (?:serve|dns) status$/,
-    /^tailscale status --json$/,
-  ],
-  openwrt: [
-    new RegExp('^iw dev ' + NAME + ' station dump$'),
-    new RegExp('^brctl showmacs ' + NAME + '$'),
-  ],
-  macos: [
-    /^pgrep -af [A-Za-z0-9_.:-]+$/,
-    /^sw_vers$/,
-    /^openclaw --version$/,
-  ],
-};
-
-/** Exact, literal single-command only; no shell-control operators. */
-export function isViewer2ReadOnly(command: string, packs: readonly Viewer2Pack[]): boolean {
-  if (typeof command !== 'string' || command.length < 1 || command.length > 5000) return false;
-  if (/[;&|<>\x60$(){}\n\r\\]/.test(command)) return false;
-  if (/[\x00-\x1f\x7f]/.test(command)) return false;
-  return packs.every(p => Object.hasOwn(matchers, p))
-    && packs.some(pack => matchers[pack].some(re => re.test(command)));
-}
-),
+    // ICMP probes are bounded (1-5 packets, 1-5s per timeout).
+    new RegExp('^ping(?: -6)? -c [1-5](?: -W [1-5])? ' + TARGET + '$'),
     /^ifconfig(?: -a| [A-Za-z0-9_.:@-]+)?$/,
   ],
   vpn: [
     new RegExp('^wg show ' + NAME + '$'),
     new RegExp('^wg show ' + NAME + ' (?:endpoints|latest-handshakes|transfer|peers)$'),
     /^tailscale (?:serve|dns) status$/,
+    /^tailscale status --json$/,
   ],
   openwrt: [
     new RegExp('^iw dev ' + NAME + ' station dump$'),
