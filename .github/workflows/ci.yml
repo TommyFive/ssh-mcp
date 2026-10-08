@@ -261,6 +261,9 @@ jobs:
   # merge. Said explicitly because the previous wording outlived the fix, and a
   # review round reasoned from it that a Windows-only regression could still ship.
   ci:
+    # GitHub ruleset requires the status context named "CI" (case sensitive).
+    # Keep the existing six-job dependency gate; change its display name only.
+    name: CI
     runs-on: ubuntu-latest
     needs: [test, windows, macos, security-scan, codeql, docker]
     # Not `always()`: that reports red for a run someone cancelled on purpose.
