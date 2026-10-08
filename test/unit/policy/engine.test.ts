@@ -28,6 +28,61 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
   };
 }
 
+describe('Scoped time-limited admin SFTP preapproval (no client elicitation)', () => {
+  const engine = new PolicyEngine(DEFAULT_RULES);
+  const path = '/Users/example/.cache/ssh-mcp-test/probe.txt';
+  const command = (p = path, bytes = 16) =>
+    `sftp:upload --overwrite --bytes=${bytes} --sha256=${'a'.repeat(32)} ${p}`;
+  const now = Date.now();
+  const grant = {
+    paths: [path], issuedAt: new Date(now - 60_000).toISOString(),
+    expiresAt: new Date(now + 10 * 60_000).toISOString(), maxBytes: 2048,
+  };
+  const admin = makeProfile({
+    name: 'mac-mini-admin', role: 'admin', group: 'dev', readOnly: false,
+    approvalPolicy: 'ask-destructive', sftpUploadPreapproval: grant,
+  });
+  it('keeps destructive classification, but allows only exact preapproved upload tool+path', () => {
+    const allowed = engine.evaluate(command(), admin, 'sftp-upload');
+    expect(allowed).toMatchObject({
+      decision: 'allow', commandClass: 'destructive',
+      ruleId: 'out-of-band-sftp-preapproval',
+    });
+    expect(engine.evaluate(command(), admin, 'run-command').decision).not.toBe('allow');
+    expect(engine.evaluate(command(path + '.other'), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate(command('/Users/example/.cache/ssh-mcp-test/../ssh-mcp-test/probe.txt'), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate(command(path, 2049), admin, 'sftp-upload').decision).not.toBe('allow');
+    expect(engine.evaluate('rm -rf /tmp/not-an-upload', admin, 'run-command').decision).not.toBe('allow');
+  });
+  it('rejects expired, future, oversized-window and absent approvals', () => {
+    const windows = [
+      { ...grant, issuedAt: new Date(now - 3600_000).toISOString(), expiresAt: new Date(now - 1000).toISOString() },
+      { ...grant, issuedAt: new Date(now + 60_000).toISOString(), expiresAt: new Date(now + 120_000).toISOString() },
+      { ...grant, issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3600_000).toISOString() },
+    ];
+    for (const g of windows) {
+      expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: g }, 'sftp-upload').decision).toBe('require-approval');
+    }
+    expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: undefined }, 'sftp-upload').decision).toBe('require-approval');
+  });
+  it('never bypasses Viewer, Operator, approval-policy deny or role binding', () => {
+    for (const profile of [
+      { ...admin, role: 'viewer', readOnly: true },
+      { ...admin, role: 'operator' },
+      { ...admin, approvalPolicy: 'deny' as const },
+      { ...admin, group: 'prod', role: 'viewer', readOnly: false },
+    ]) {
+      expect(engine.evaluate(command(), profile, 'sftp-upload').decision).not.toBe('allow');
+    }
+  });
+  it('does not bypass user denylist or other SFTP classes', () => {
+    const deny = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['ssh-mcp-test/probe'] });
+    expect(deny.evaluate(command(), admin, 'sftp-upload').decision).toBe('deny');
+    expect(engine.evaluate('sftp:upload-file --overwrite /tmp/a', admin, 'sftp-upload-file').decision).not.toBe('allow');
+    expect(engine.evaluate('sftp:download-file /tmp/a', admin, 'sftp-download-file').decision).not.toBe('allow');
+  });
+});
+
 describe('PolicyEngine', () => {
   const engine = new PolicyEngine(DEFAULT_RULES);
 
@@ -100,6 +155,37 @@ describe('PolicyEngine', () => {
     const profile = makeProfile({ readOnly: true, name: 'prod-db' });
     expect(engine.evaluate('ls', profile, 'read-command').decision).toBe('allow');
     expect(engine.evaluate('npm install', profile, 'run-command').decision).toBe('deny');
+  });
+
+  it('requires an explicit IP-only allowlist for the separate ICMP pack', () => {
+    const plain = makeProfile({ role: 'viewer', group: 'prod', readOnly: true,
+      viewer2Packs: ['network', 'icmp'], approvalPolicy: 'deny' });
+    expect(engine.evaluate('ping -c 1 10.1.2.3', plain, 'read-command').decision).toBe('deny');
+    const scoped = { ...plain, viewer2ProbeTargets: ['10.1.2.3'] };
+    expect(engine.evaluate('ping -c 1 10.1.2.3', scoped, 'read-command').decision).toBe('allow');
+    expect(engine.evaluate('ping -c 1 10.1.2.4', scoped, 'read-command').decision).toBe('deny');
+    expect(engine.evaluate('ping -c 1 169.254.169.254', {
+      ...plain, viewer2ProbeTargets: ['169.254.169.254'],
+    }, 'read-command').decision).toBe('deny');
+  });
+
+  describe('Viewer2 opt-in rights stay inside existing role bindings', () => {
+    const viewer = makeProfile({ role: 'viewer', group: 'prod', readOnly: true, approvalPolicy: 'deny' });
+    it('does not grant new rights unless explicitly opted in', () => {
+      expect(engine.evaluate('wg show wg0', viewer, 'read-command').decision).toBe('deny');
+      expect(engine.evaluate('systemctl --failed --no-pager', viewer, 'read-command').decision).toBe('deny');
+    });
+    it('allows only declared bounded read-only diagnostics', () => {
+      const optIn: Profile = { ...viewer, viewer2Packs: ['linux', 'vpn'] };
+      expect(engine.evaluate('wg show wg0', optIn, 'read-command').decision).toBe('allow');
+      expect(engine.evaluate('wg show wg0', optIn, 'read-command').commandClass).toBe('read-only');
+      expect(engine.evaluate('systemctl --failed --no-pager', optIn, 'read-command').decision).toBe('allow');
+      expect(engine.evaluate('systemctl restart sing-box', optIn, 'read-command').decision).toBe('deny');
+      expect(engine.evaluate('wg set wg0 listen-port 7777', optIn, 'run-command').decision).toBe('deny');
+      expect(engine.evaluate('npm install', optIn, 'run-command').decision).toBe('deny');
+      expect(engine.evaluate('sudo wg show wg0', optIn, 'read-command').decision).toBe('deny');
+      expect(engine.evaluate('wg show wg0; id', optIn, 'read-command').decision).toBe('deny');
+    });
   });
 
   it('prod host group is stricter than dev', () => {

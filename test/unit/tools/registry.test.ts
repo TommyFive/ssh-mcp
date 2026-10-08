@@ -15,7 +15,7 @@ describe('MCP tool surface', () => {
     const { tools } = await h.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'close-session', 'list-connections', 'list-sessions', 'open-session',
-      'privileged-command', 'read-command', 'read-session-output',
+      'privileged-command', 'read-command', 'read-commands-batch', 'read-session-output',
       'run-command', 'sftp-download', 'sftp-download-file', 'sftp-list',
       'sftp-upload', 'sftp-upload-file', 'signal-process',
     ]);
@@ -30,7 +30,7 @@ describe('MCP tool surface', () => {
     // remote directory, while the download writes a file on local disk, which
     // is the whole reason it is classified destructive.
     expect(readOnly).toEqual([
-      'list-connections', 'list-sessions', 'read-command', 'read-session-output',
+      'list-connections', 'list-sessions', 'read-command', 'read-commands-batch', 'read-session-output',
       'sftp-download', 'sftp-list',
     ]);
   });
@@ -66,6 +66,64 @@ describe('read-command — enforceClass', () => {
     const res = await call('read-command', { command: 'curl http://169.254.169.254/latest/meta-data/' });
     expect(res.isError).toBe(true);
     expect(h.execCalls).toHaveLength(0);
+  });
+});
+
+describe('Viewer2 opt-in policy via real MCP command tools', () => {
+  it('allows approved diagnostic syntax only when the Viewer profile opts in', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
+      approvalPolicy: 'deny', viewer2Packs: ['vpn'] });
+    const allowed = await call('read-command', { command: 'wg show wg0' });
+    expect(allowed.isError).toBeFalsy();
+    const blocked = await call('read-command', { command: 'wg set wg0 listen-port 8192' });
+    expect(blocked.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['wg show wg0']);
+    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny']);
+  });
+
+  it('does not grant existing unconfigured Viewer profiles any new read rights', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
+      approvalPolicy: 'deny' });
+    const denied = await call('read-command', { command: 'wg show wg0' });
+    expect(denied.isError).toBe(true);
+    expect(h.execCalls).toHaveLength(0);
+  });
+});
+
+describe('read-commands-batch — no escalation and per-item audit', () => {
+  it('runs independent reads on prod Viewer and rejects intervening write', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
+    const result = await call('read-commands-batch', { commands: [
+      ['whoami'],
+      ['systemctl', 'restart', 'sing-box'],
+      ['uname', '-a'],
+    ] });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname -a']);
+    expect(h.auditRecords).toHaveLength(3);
+    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny', 'allow']);
+  });
+
+  it('rejects shell operator injected into argv, audits it, and continues', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
+    const result = await call('read-commands-batch', { commands: [
+      ['whoami'],
+      ['whoami;', 'touch', '/tmp/pwn'],
+      ['uname'],
+    ] });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname']);
+    expect(h.auditRecords).toHaveLength(3);
+    expect(h.auditRecords[1].ruleId).toBe('input-rejected');
+  });
+
+  it('does not smuggle a safe command through an admin profile', async () => {
+    h = await createHarness({ role: 'admin', group: 'dev', readOnly: false });
+    const result = await call('read-commands-batch', {
+      commands: [['npm', 'install'], ['whoami']],
+    });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami']);
   });
 });
 

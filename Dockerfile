@@ -23,6 +23,8 @@ COPY package*.json ./
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src/ ./src/
+# The build script uses a native Node helper; it must be present in the builder.
+COPY scripts/chmod-build.mjs ./scripts/chmod-build.mjs
 RUN npm run build
 
 FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5

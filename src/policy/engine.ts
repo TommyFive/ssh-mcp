@@ -1,3 +1,4 @@
+import { approvedSftpUpload } from './sftp-preapproval.js';
 import type {
   CommandClass,
   PolicyConfig,
@@ -279,7 +280,7 @@ export class PolicyEngine {
     profile: Profile,
     _toolName: string,
   ): PolicyEvaluation {
-    const parsed = classifyCommand(command, profile.readOnlyExtensions ?? []);
+    const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);
 
@@ -307,6 +308,18 @@ export class PolicyEngine {
         ruleId: 'role-binding',
         reason: this.explainRoleDenial(profile, parsed.class),
       };
+    }
+
+    // Explicitly scoped 30-minute SFTP upload grants issued out-of-band from
+    // the operator-owned Mac mini config or a private grant file. Keep the
+    // command destructive and honor denylist, role binding and OPA checks.
+    if (approvalRequired && _toolName === 'sftp-upload'
+        && profile.role === 'admin' && !profile.readOnly
+        && profile.approvalPolicy !== 'deny' && parsed.class === 'destructive'
+        && parsed.binary === 'sftp:upload'
+        && approvedSftpUpload(command, profile)) {
+      return { decision: 'allow', commandClass: 'destructive',
+        binary: 'sftp:upload', ruleId: 'out-of-band-sftp-preapproval' };
     }
 
     if (approvalRequired) {
@@ -354,7 +367,7 @@ export class PolicyEngine {
     }
 
     try {
-      const parsed = classifyCommand(command, profile.readOnlyExtensions ?? []);
+      const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
       const input = {
         subject: { role: profile.role, profile: profile.name },
         action: { tool: toolName, commandClass: parsed.class },

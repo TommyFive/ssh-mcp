@@ -1,5 +1,6 @@
 import type { CommandClass, ParsedCommand, ReadOnlyExtension } from '../types.js';
 import { AWK_NAMES, readAwkInvocation, type AwkFindings } from './awk.js';
+import { isViewer2ReadOnly, type Viewer2Pack } from './viewer2.js';
 
 /**
  * Anything through which the shell can start a second command.
@@ -48,6 +49,36 @@ const READ_ONLY_EXTENSION_MATCHERS: Record<ReadOnlyExtension, readonly RegExp[]>
   'linux-storage-diagnostics': [/^mount$/, /^findmnt(?: --json|-rn)$/, /^lsblk --json --output NAME,SIZE,TYPE,FSTYPE,MOUNTPOINTS$/],
   'linux-login-diagnostics': [/^last reboot$/, /^last -n (?:[1-9]|[1-9][0-9]|1[0-9]{2}|200)$/, /^lastlog$/],
   'linux-process-diagnostics': [/^dmesg(?: -T)?$/, /^lsof -nP -i(?:TCP)?(?: -sTCP:LISTEN)?$/],
+  // Backward-compatible packs from the deployed SSH-MCP 2.2.5 fork.
+  // Keep these explicit and behind the existing SHELL_CONTROL_CHARS gate.
+  'linux-system-diagnostics': [
+        /^date$/,
+        /^hostname$/,
+        /^sysctl (?:-a|-n [A-Za-z0-9_.]+|[A-Za-z0-9_.]+)$/,
+        /^hostnamectl$/,
+        /^timedatectl(?: show)?$/,
+        /^resolvectl (?:status|statistics)$/,
+        /^lsmod$/,
+        /^modinfo [A-Za-z0-9_.-]+$/,
+        /^systemd-analyze (?:time|blame|critical-chain)$/,
+        /^dpkg -l$/,
+        /^dpkg-query -W(?: [A-Za-z0-9_.+:-]+)?$/,
+        /^sed -n [0-9]+(?:,[0-9]+)?p [A-Za-z0-9_./@%+,:=~-]+$/,
+    ],
+  'asus-merlin-diagnostics': [
+        /^ifconfig(?: -a| [A-Za-z0-9_.:-]+)?$/,
+        /^route -n$/,
+        /^netstat -rn$/,
+        /^sysctl (?:-a|-n [A-Za-z0-9_.]+|[A-Za-z0-9_.]+)$/,
+        /^brctl show$/,
+        /^nvram get [A-Za-z0-9_.:-]+$/,
+        /^wl -i [A-Za-z0-9_.:-]+ (?:status|assoclist)$/,
+        /^robocfg show$/,
+        /^cru l$/,
+        /^ip(?:6)?tables(?: -t (?:filter|nat|mangle|raw))? (?:-S(?: [A-Za-z0-9_.:-]+)?|-L(?: [A-Za-z0-9_.:-]+)? -n -v)$/,
+        /^ip(?:6)?tables-save$/,
+        /^sed -n [0-9]+(?:,[0-9]+)?p [A-Za-z0-9_./@%+,:=~-]+$/,
+    ],
   'singbox-diagnostics': [/^sing-box version$/, /^sing-box check -c \/etc\/sing-box\/config\.json$/],
   'macos-network-diagnostics': [/^scutil --(?:dns|proxy|nwi)$/, /^scutil --get (?:ComputerName|HostName|LocalHostName)$/,
     /^networksetup (?:-listallhardwareports|-listallnetworkservices)$/, /^networksetup -(?:getinfo|getdnsservers|getwebproxy|getsecurewebproxy|getautoproxyurl|getairportnetwork|getnetworkserviceenabled) [A-Za-z0-9_.-]+$/,
@@ -595,7 +626,9 @@ const EXEC_WRAPPERS = new Set([
 // Null-prototype for the same reason as INTERPRETERS: indexed by the command word.
 const DISQUALIFYING_ARGS: Record<string, RegExp> = Object.assign(
   Object.create(null) as Record<string, RegExp>,
-  { find: /^-(exec|execdir|ok|okdir|delete|fprintf?|fls)$/, sort: /^(?:-o|--output(?:=.*)?)$/ },
+  { find: /^-(?:exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/,
+    file: /^(?:-C|--compile)$/,
+    sort: /^(?:-o.*|--output(?:=.*)?)$/ },
 );
 
 /** A leading `NAME=value`, which a shell treats as an assignment, not a command. */
@@ -1279,7 +1312,7 @@ function syntheticVerb(command: string): string {
  * `privileged`, which on `prod` is the difference between a prompt and a refusal.
  * Taking the maximum is what makes the scan unable to lower anything.
  */
-export function classifyCommand(command: string, extensions: readonly ReadOnlyExtension[] = [], depth = 0): ParsedCommand {
+export function classifyCommand(command: string, extensions: readonly ReadOnlyExtension[] = [], depth = 0, viewer2Packs: readonly Viewer2Pack[] = [], probeTargets: readonly string[] = []): ParsedCommand {
   const trimmed = command.trim();
   const outer = classifyOuter(trimmed);
 
@@ -1302,13 +1335,16 @@ export function classifyCommand(command: string, extensions: readonly ReadOnlyEx
   }
 
   for (const inner of nestedCommands(trimmed)) {
-    const parsed = classifyCommand(inner, extensions, depth + 1);
+    const parsed = classifyCommand(inner, extensions, depth + 1, viewer2Packs, probeTargets);
     // `binary` follows the winning side deliberately: it is what the audit record and
     // the refusal message name, and naming the outer `echo` would describe the wrong
     // process as the one that ran as root.
     if (CLASS_RANK[parsed.class] > CLASS_RANK[highest.class]) highest = parsed;
   }
 
+  if (highest.class === 'safe' && isViewer2ReadOnly(trimmed, viewer2Packs, probeTargets)) {
+    return { binary: highest.binary, fullCommand: trimmed, class: 'read-only' as CommandClass };
+  }
   if (highest.class === 'safe' && isExtensionReadOnly(trimmed, extensions)) {
     return { binary: highest.binary, fullCommand: trimmed, class: 'read-only' as CommandClass };
   }

@@ -10,6 +10,8 @@ export type ReadOnlyExtension =
   | 'linux-storage-diagnostics'
   | 'linux-login-diagnostics'
   | 'linux-process-diagnostics'
+  | 'linux-system-diagnostics'
+  | 'asus-merlin-diagnostics'
   | 'singbox-diagnostics'
   | 'macos-network-diagnostics'
   | 'macos-system-diagnostics';
@@ -35,6 +37,22 @@ export interface Profile {
   readOnly: boolean;
   /** Named, built-in, argument-checked read-only command packs. */
   readOnlyExtensions?: ReadOnlyExtension[];
+  /** Additive, opt-in Viewer2 read-only packs. Empty by default. */
+  viewer2Packs?: import('./policy/viewer2.js').Viewer2Pack[];
+  /** Explicit literal IPs allowed for opt-in, bounded ICMP tests. */
+  viewer2ProbeTargets?: string[];
+  /**
+   * Out-of-band, one-off approval for destructive SFTP inline uploads, restricted
+   * to exact absolute destination paths and a 30-minute window. No default.
+   * The operator must update the protected config and restart the sidecar to
+   * issue a new approval; a client without MCP elicitation cannot self-approve.
+   */
+  sftpUploadPreapproval?: {
+    paths: string[];
+    issuedAt: string;
+    expiresAt: string;
+    maxBytes: number;
+  };
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
