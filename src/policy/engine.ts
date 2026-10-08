@@ -279,7 +279,7 @@ export class PolicyEngine {
     profile: Profile,
     _toolName: string,
   ): PolicyEvaluation {
-    const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? []);
+    const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);
 
@@ -354,7 +354,7 @@ export class PolicyEngine {
     }
 
     try {
-      const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? []);
+      const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
       const input = {
         subject: { role: profile.role, profile: profile.name },
         action: { tool: toolName, commandClass: parsed.class },
