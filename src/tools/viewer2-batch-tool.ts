@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { ToolDeps, Pipeline } from './pipeline.js';
 import { textResult } from './results.js';
+import { TOOL_DESCRIPTIONS as D } from './descriptions.js';
 
 /**
  * One audited SSH execution per command. No shell glue, pipes, redirection,
@@ -14,7 +15,7 @@ export function registerReadCommandsBatch(
 ) {
   server.tool(
     'read-commands-batch',
-    'Execute up to 16 independently policy-checked read-only SSH commands.',
+    D['read-commands-batch'],
     {
       commands: z.array(
         z.array(z.string().min(1).max(256)).min(1).max(24),
