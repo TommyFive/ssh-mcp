@@ -109,15 +109,15 @@ describe('PolicyEngine', () => {
       expect(engine.evaluate('systemctl --failed --no-pager', viewer, 'read-command').decision).toBe('deny');
     });
     it('allows only declared bounded read-only diagnostics', () => {
-      const optIn = { ...viewer, viewer2Packs: ['linux', 'vpn'] as const };
-      expect(engine.evaluate('wg show wg0', optIn as Profile, 'read-command').decision).toBe('allow');
-      expect(engine.evaluate('wg show wg0', optIn as Profile, 'read-command').commandClass).toBe('read-only');
-      expect(engine.evaluate('systemctl --failed --no-pager', optIn as Profile, 'read-command').decision).toBe('allow');
-      expect(engine.evaluate('systemctl restart sing-box', optIn as Profile, 'read-command').decision).toBe('deny');
-      expect(engine.evaluate('wg set wg0 listen-port 7777', optIn as Profile, 'run-command').decision).toBe('deny');
-      expect(engine.evaluate('npm install', optIn as Profile, 'run-command').decision).toBe('deny');
-      expect(engine.evaluate('sudo wg show wg0', optIn as Profile, 'read-command').decision).toBe('deny');
-      expect(engine.evaluate('wg show wg0; id', optIn as Profile, 'read-command').decision).toBe('deny');
+      const optIn: Profile = { ...viewer, viewer2Packs: ['linux', 'vpn'] };
+      expect(engine.evaluate('wg show wg0', optIn, 'read-command').decision).toBe('allow');
+      expect(engine.evaluate('wg show wg0', optIn, 'read-command').commandClass).toBe('read-only');
+      expect(engine.evaluate('systemctl --failed --no-pager', optIn, 'read-command').decision).toBe('allow');
+      expect(engine.evaluate('systemctl restart sing-box', optIn, 'read-command').decision).toBe('deny');
+      expect(engine.evaluate('wg set wg0 listen-port 7777', optIn, 'run-command').decision).toBe('deny');
+      expect(engine.evaluate('npm install', optIn, 'run-command').decision).toBe('deny');
+      expect(engine.evaluate('sudo wg show wg0', optIn, 'read-command').decision).toBe('deny');
+      expect(engine.evaluate('wg show wg0; id', optIn, 'read-command').decision).toBe('deny');
     });
   });
 
