@@ -42,23 +42,32 @@ export function registerReadCommandsBatch(
           continue;
         }
         const command = argv.join(' ');
-        const result = await runAudited(
-          command,
-          { toolName: 'read-commands-batch', failureClass: 'read-only',
-            enforceClass: 'read-only', profile, extra },
-          execAndReport(),
-        );
-        if (result.isError) isError = true;
-        const lines = result.content
-          .filter((block): block is Extract<typeof block, { type: 'text' }> => block.type === 'text')
-          .map(block => block.text);
-        // Cap the aggregate MCP response: each remote command already has its
-        // own output quota, but 16 responses combined could exceed that quota.
-        const remaining = Math.max(0, 262144 - output.join('\n\n').length);
-        const payload = lines.join('\n');
-        output.push('[' + (index + 1) + '] ' + command + '\n'
-          + payload.slice(0, Math.min(remaining, 32768))
-          + (payload.length > Math.min(remaining, 32768) ? '\n[output truncated]' : ''));
+        // The central pipeline throws on policy and input rejection. A batch
+        // must not accidentally abort after the first denied entry; nor should
+        // any handler bypass the pipeline or its individual audit record.
+        try {
+          const result = await runAudited(
+            command,
+            { toolName: 'read-commands-batch', failureClass: 'read-only',
+              enforceClass: 'read-only', profile, extra },
+            execAndReport(),
+          );
+          if (result.isError) isError = true;
+          const lines = result.content
+            .filter((entry): entry is Extract<typeof entry, { type: 'text' }> => entry.type === 'text')
+            .map(entry => entry.text);
+          const remaining = Math.max(0, 262144 - output.join('\n\n').length);
+          const payload = lines.join('\n');
+          const limit = Math.min(remaining, 32768);
+          output.push('[' + (index + 1) + '] ' + command + '\n'
+            + payload.slice(0, limit)
+            + (payload.length > limit ? '\n[output truncated]' : ''));
+        } catch (error) {
+          isError = true;
+          // runAudited already audited the failed item; do not audit twice.
+          const reason = error instanceof Error ? error.message : String(error);
+          output.push('[' + (index + 1) + '] Refused: ' + reason.slice(0, 500));
+        }
       }
       return { ...textResult(output.join('\n\n')), isError };
     },
