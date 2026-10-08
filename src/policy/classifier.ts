@@ -1312,7 +1312,7 @@ function syntheticVerb(command: string): string {
  * `privileged`, which on `prod` is the difference between a prompt and a refusal.
  * Taking the maximum is what makes the scan unable to lower anything.
  */
-export function classifyCommand(command: string, extensions: readonly ReadOnlyExtension[] = [], depth = 0, viewer2Packs: readonly Viewer2Pack[] = []): ParsedCommand {
+export function classifyCommand(command: string, extensions: readonly ReadOnlyExtension[] = [], depth = 0, viewer2Packs: readonly Viewer2Pack[] = [], probeTargets: readonly string[] = []): ParsedCommand {
   const trimmed = command.trim();
   const outer = classifyOuter(trimmed);
 
@@ -1335,14 +1335,14 @@ export function classifyCommand(command: string, extensions: readonly ReadOnlyEx
   }
 
   for (const inner of nestedCommands(trimmed)) {
-    const parsed = classifyCommand(inner, extensions, depth + 1, viewer2Packs);
+    const parsed = classifyCommand(inner, extensions, depth + 1, viewer2Packs, probeTargets);
     // `binary` follows the winning side deliberately: it is what the audit record and
     // the refusal message name, and naming the outer `echo` would describe the wrong
     // process as the one that ran as root.
     if (CLASS_RANK[parsed.class] > CLASS_RANK[highest.class]) highest = parsed;
   }
 
-  if (highest.class === 'safe' && isViewer2ReadOnly(trimmed, viewer2Packs)) {
+  if (highest.class === 'safe' && isViewer2ReadOnly(trimmed, viewer2Packs, probeTargets)) {
     return { binary: highest.binary, fullCommand: trimmed, class: 'read-only' as CommandClass };
   }
   if (highest.class === 'safe' && isExtensionReadOnly(trimmed, extensions)) {
