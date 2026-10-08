@@ -1,8 +1,7 @@
-/**
- * Experimental Viewer 2.0 matcher. Deliberately NOT wired into production
- * policy: current profiles retain exactly their existing rights.
- */
-export type Viewer2Pack = 'linux' | 'network' | 'vpn' | 'openwrt' | 'macos';
+/** Conservative opt-in Viewer2 matcher, with active probes isolated. */
+import { isIP } from 'node:net';
+
+export type Viewer2Pack = 'linux' | 'network' | 'vpn' | 'openwrt' | 'macos' | 'icmp';
 
 const NAME = '[A-Za-z0-9_.:@-]+';
 const UNIT = '[A-Za-z0-9_.@-]+';
@@ -42,10 +41,11 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     new RegExp('^ethtool -(?:S|k|i) ' + NAME + '$'),
     // Enumerate passive ss modes; socket-killing -K must never match.
     /^ss -(?:lntp|ltnp|lnup|lntup|tnp|ntp|unp|uapn|uapmni|tupn|s)$/,
-    // ICMP probes are bounded (1-5 packets, 1-5s per timeout).
-    new RegExp('^ping(?: -6)? -c [1-5](?: -W [1-5])? ' + TARGET + '$'),
     /^ifconfig(?: -a| [A-Za-z0-9_.:@-]+)?$/,
   ],
+  // Passive packs never authorize active probing. ICMP is checked below
+  // only against separately configured literal-IP targets.
+  icmp: [],
   vpn: [
     new RegExp('^wg show ' + NAME + '$'),
     new RegExp('^wg show ' + NAME + ' (?:endpoints|latest-handshakes|transfer|peers)$'),
@@ -71,11 +71,39 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
   ],
 };
 
-/** Exact, literal single-command only; no shell-control operators. */
-export function isViewer2ReadOnly(command: string, packs: readonly Viewer2Pack[]): boolean {
+/** Disallow metadata/link-local, loopback, unspecified and multicast probes. */
+export function isSafeProbeTarget(target: string): boolean {
+  const family = isIP(target);
+  if (family === 0) return false;
+  const s = target.toLowerCase();
+  if (family === 4) {
+    const [a, b] = s.split('.').map(Number);
+    return a !== 0 && a !== 127 && a < 224 && !(a === 169 && b === 254);
+  }
+  // IPv4-mapped addresses could bypass the IPv4 exclusions.
+  if (s.includes('ffff:')) return false;
+  return s !== '::' && s !== '::1' && !/^fe[89ab]/.test(s) && !s.startsWith('ff');
+}
+
+/** No shell composition and no new active probe authorization without an
+ * explicitly configured, exact literal-IP allowlist and the icmp pack. */
+export function isViewer2ReadOnly(
+  command: string,
+  packs: readonly Viewer2Pack[],
+  probeTargets: readonly string[] = [],
+): boolean {
   if (typeof command !== 'string' || command.length < 1 || command.length > 5000) return false;
-  if (/[;&|<>\x60$(){}\n\r\\]/.test(command)) return false;
-  if (/[\x00-\x1f\x7f]/.test(command)) return false;
-  return packs.every(p => Object.hasOwn(matchers, p))
-    && packs.some(pack => matchers[pack].some(re => re.test(command)));
+  if (/[;&|<>\\x60$(){}\\n\\r\\\\]/.test(command)) return false;
+  if (/[\\x00-\\x1f\\x7f]/.test(command)) return false;
+  if (!packs.every(p => Object.hasOwn(matchers, p))) return false;
+  const active = /^ping(?: -6)? -c [1-5](?: -W [1-5])? ([A-Fa-f0-9:.]+)$/.exec(command);
+  if (active) {
+    const target = active[1];
+    const ipv = isIP(target);
+    if ((command.startsWith('ping -6 ') && ipv !== 6)
+      || !packs.includes('icmp') || !isSafeProbeTarget(target)) return false;
+    return probeTargets.some(allowed => isSafeProbeTarget(allowed)
+      && allowed.toLowerCase() === target.toLowerCase());
+  }
+  return packs.some(pack => matchers[pack].some(re => re.test(command)));
 }
