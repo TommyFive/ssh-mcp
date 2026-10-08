@@ -1,4 +1,6 @@
-# Viewer 2.0 — Production rollout and rollback runbook (not yet executable)
+# Viewer 2.0 — rollout history and recovery runbook
+
+> **Archive notice (2026-10-08):** The controlled third canary and the 23-profile opt-in have been executed successfully. This document intentionally preserves **historical pre-cutover hard stops, failures and tested recovery steps**; its older “not yet executable”, “do not deploy” and “manual participation needed” wording describes pre-deployment gates, not today's production status. For current verified state, live configuration, evidence and the **still-unshipped security fix**, see [Viewer 2.0 production handover](viewer2-production-2026-10-08.md). Do not reuse the initial `2.2.5→2.11` cutover script as a generic in-place upgrade procedure.
 
 ## Hard stop conditions
 
