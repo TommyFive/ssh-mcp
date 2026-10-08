@@ -69,6 +69,27 @@ describe('read-command — enforceClass', () => {
   });
 });
 
+describe('Viewer2 opt-in policy via real MCP command tools', () => {
+  it('allows approved diagnostic syntax only when the Viewer profile opts in', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
+      approvalPolicy: 'deny', viewer2Packs: ['vpn'] });
+    const allowed = await call('read-command', { command: 'wg show wg0' });
+    expect(allowed.isError).toBeFalsy();
+    const blocked = await call('read-command', { command: 'wg set wg0 listen-port 8192' });
+    expect(blocked.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['wg show wg0']);
+    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny']);
+  });
+
+  it('does not grant existing unconfigured Viewer profiles any new read rights', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
+      approvalPolicy: 'deny' });
+    const denied = await call('read-command', { command: 'wg show wg0' });
+    expect(denied.isError).toBe(true);
+    expect(h.execCalls).toHaveLength(0);
+  });
+});
+
 describe('read-commands-batch — no escalation and per-item audit', () => {
   it('runs independent reads on prod Viewer and rejects intervening write', async () => {
     h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
