@@ -1,0 +1,31 @@
+name: Viewer2 lockfile sync once
+on:
+  push:
+    branches: [feat/viewer2-readonly-lab-20261008]
+    paths:
+      - '.github/workflows/viewer2-lockfile-once.yml'
+permissions:
+  contents: write
+jobs:
+  update-lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Sync lockfile without invoking package scripts
+        run: |
+          npm install --package-lock-only --ignore-scripts --no-fund
+          npm audit fix --package-lock-only --ignore-scripts --no-fund || true
+          npm audit --audit-level=high || true
+      - name: Commit generated lockfile and remove this temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f .github/workflows/viewer2-lockfile-once.yml
+          git add -- package-lock.json package.json .github/workflows/viewer2-lockfile-once.yml
+          git diff --cached --quiet || git commit -m "chore(viewer2): regenerate lockfile and remove one-shot workflow"
+          git push origin "HEAD:refs/heads/feat/viewer2-readonly-lab-20261008"
