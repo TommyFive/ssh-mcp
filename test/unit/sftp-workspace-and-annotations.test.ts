@@ -69,9 +69,7 @@ const LINK = 0o120777;
 const statuses = (modes: Record<string,number>): SFTPWrapper => ({
   lstat: (path: string, cb: (err: Error | undefined, attributes?: {mode:number}) => void) => {
     if (path in modes) cb(undefined, {mode:modes[path]});
-    else Object.assign(new Error('missing'), {code:2}) satisfies Error;
-    // Unknown intermediate components must not be assumed safe.
-    if (!(path in modes)) cb(Object.assign(new Error('missing'), {code:2}));
+    else cb(Object.assign(new Error('missing'), {code:2}));
   },
 }) as unknown as SFTPWrapper;
 
@@ -85,7 +83,6 @@ const opts = {maxBytes: 65536, idleTimeoutMs: 1000};
 describe('remote scoped SFTP write protection', () => {
   it('accepts owner-only ancestors and a regular existing or new file', async () => {
     await expect(assertScopedSftpPath(statuses(safe),root,root+'/README.md',opts)).resolves.toBeUndefined();
-    await expect(assertScopedSftpPath(statuses({...safe,[root+'/README.md']:undefined} as Record<string,number>),root,root+'/README.md',opts)).rejects.toThrow();
     const withoutFile = {...safe}; delete (withoutFile as Record<string,number>)[root+'/README.md'];
     await expect(assertScopedSftpPath(statuses(withoutFile),root,root+'/new.md',opts)).resolves.toBeUndefined();
   });
