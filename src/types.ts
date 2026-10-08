@@ -39,6 +39,8 @@ export interface Profile {
   readOnlyExtensions?: ReadOnlyExtension[];
   /** Additive, opt-in Viewer2 read-only packs. Empty by default. */
   viewer2Packs?: import('./policy/viewer2.js').Viewer2Pack[];
+  /** Explicit literal IPs allowed for opt-in, bounded ICMP tests. */
+  viewer2ProbeTargets?: string[];
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
