@@ -69,6 +69,43 @@ describe('read-command — enforceClass', () => {
   });
 });
 
+describe('read-commands-batch — no escalation and per-item audit', () => {
+  it('runs independent reads on prod Viewer and rejects intervening write', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
+    const result = await call('read-commands-batch', { commands: [
+      ['whoami'],
+      ['systemctl', 'restart', 'sing-box'],
+      ['uname', '-a'],
+    ] });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname -a']);
+    expect(h.auditRecords).toHaveLength(3);
+    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny', 'allow']);
+  });
+
+  it('rejects shell operator injected into argv, audits it, and continues', async () => {
+    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
+    const result = await call('read-commands-batch', { commands: [
+      ['whoami'],
+      ['whoami;', 'touch', '/tmp/pwn'],
+      ['uname'],
+    ] });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname']);
+    expect(h.auditRecords).toHaveLength(3);
+    expect(h.auditRecords[1].ruleId).toBe('input-rejected');
+  });
+
+  it('does not smuggle a safe command through an admin profile', async () => {
+    h = await createHarness({ role: 'admin', group: 'dev', readOnly: false });
+    const result = await call('read-commands-batch', {
+      commands: [['npm', 'install'], ['whoami']],
+    });
+    expect(result.isError).toBe(true);
+    expect(h.execCalls.map(x => x.command)).toEqual(['whoami']);
+  });
+});
+
 describe('run-command — approval gate', () => {
   it('executes a destructive command once the client approves', async () => {
     h = await createHarness();
