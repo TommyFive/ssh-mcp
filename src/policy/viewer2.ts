@@ -23,7 +23,8 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^journalctl(?: -u [A-Za-z0-9_.@-]+)? --since '(?:[1-9]|[1-5][0-9]) minutes? ago'(?: -p (?:warning|err|crit))? --no-pager$/,
     /^journalctl -k -n (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500) --no-pager$/,
     new RegExp('^journalctl -u ' + UNIT + ' --since -[1-9][0-9]{0,2}(?:min|h|d) -n ' + LAST + ' --no-pager$'),
-    new RegExp('^getent (?:hosts|ahostsv4|ahostsv6) ' + TARGET + '$'),
+    // No DNS resolution in the passive Linux pack: getent hosts may query the network.
+    // DNS queries need separate opt-in and exact target scope.
     /^sshd -T$/,
     /^sysctl [A-Za-z0-9_.]+(?: [A-Za-z0-9_.]+){0,9}$/,
     /^hostname$/,
