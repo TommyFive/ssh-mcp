@@ -1,6 +1,6 @@
 # ChatGPT-confirmed Admin SFTP: scoped workspace policy
 
-**Status:** Source change for review only; **not live on the Mac mini** until a verified package deployment and a separate local TOML opt-in. This document never implies that SSH-MCP receives a proof of the ChatGPT “Allow once” click.
+**Status: running and verified on the Mac mini (2026-10-08).** Code reviewed in [PR #3](https://github.com/TommyFive/ssh-mcp/pull/3), built from immutable `62089183cc07f667a731ca52125674f4959a8a8f`, activated with the independent-shell [deployment runbook](mac-mini-admin-sftp-deployment-2026-10-08.md). Only `mac-mini-admin` is opted in to 64 KiB uploads under `~/.openclaw/workspace/documentation/` and `~/.openclaw/workspace/projects/`. A real 167-byte write/readback and an updated 9,610-byte `ssh-mcp-tunnel/README.md` succeeded; Viewer writing was refused; the audit recorded `ruleId=admin-sftp-workspace-scope` and Viewer denial with `ruleId=role-binding`. This document never implies that SSH-MCP receives proof of a ChatGPT “Allow once” click.
 
 ## Why two prompts appeared
 
