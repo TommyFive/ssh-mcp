@@ -225,7 +225,7 @@ export function registerTransferTools(
         .describe(`Max entries to return (default ${DEFAULT_LIST_ENTRIES}, hard cap ${MAX_LIST_ENTRIES})`),
       profile: z.string().optional().describe('Profile name'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ remotePath, maxEntries, profile }, extra) => {
       return runAudited(
         `sftp:list ${remotePathForAudit(remotePath)}`,
@@ -283,7 +283,7 @@ export function registerTransferTools(
         .describe('Remote file mode, 1 to 511 (0o777); setuid, setgid and the sticky bit are refused. e.g. 420 for 0644. Omit for 0600 on a new file, or the replaced file’s permission bits.'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ localPath: source, remotePath, overwrite, mode, profile }, extra) => {
       const target = remotePathForAudit(remotePath);
       const approved =
@@ -352,7 +352,7 @@ export function registerTransferTools(
       overwrite: z.boolean().optional().describe('Replace an existing local file (default false)'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ remotePath, localPath: destination, overwrite, profile }, extra) => {
       const target = remotePathForAudit(remotePath);
       const approved =
