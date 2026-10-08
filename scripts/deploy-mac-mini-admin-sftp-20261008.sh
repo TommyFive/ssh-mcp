@@ -128,8 +128,7 @@ activate)
   [ ! -e "$OLD" ] && [ ! -e "$SNAP" ] && [ ! -e "$FAILED" ] ||
     die "Old/backup/failed path already exists; refusing another cutover."
   test "$(cat "$STAGE/release-commit")" = "$COMMIT" || die "Staged revision mismatch."
-  test "$(shasum -a 256 "$CFG" | awk '{print $1}')" =
-    "$(cat "$STAGE/sha-config-before")" || die "Live config drifted since prepare."
+  test "$(shasum -a 256 "$CFG" | awk '{print $1}')" = "$(cat "$STAGE/sha-config-before")" || die "Live config drifted since prepare."
   [ -f "$HOME/.config/ssh-mcp/.candidate-$SHORT.toml" ] ||
     die "Validated candidate TOML missing."
   echo "ACTIVATE: making protected backup first"
@@ -139,9 +138,7 @@ activate)
   /usr/bin/ditto "$ACTIVE" "$SNAP/ssh-mcp-package"
   chmod 700 "$SNAP/ssh-mcp-package"
   echo "$COMMIT" > "$SNAP/release-commit"
-  test "$(shasum -a 256 "$SNAP/config.toml" | awk '{print $1}')" =
-    "$(cat "$STAGE/sha-config-before")" ||
-    die "Backup integrity failure before switching."
+  test "$(shasum -a 256 "$SNAP/config.toml" | awk '{print $1}')" = "$(cat "$STAGE/sha-config-before")" || die "Backup integrity failure before switching."
   echo "ACTIVATE: switching binaries/config; rescue trap armed"
   rollback_on_error() {
     local rc="$1"
