@@ -15,7 +15,7 @@
 
 - `src/policy/viewer2.ts`: deny-by-default positive-list read-only pack matcher, **now integrated** behind optional per-profile `viewer2Packs` (defaults to empty). No existing profile is activated or updated.
 - `src/policy/viewer2-batch.ts`: non-executing planner for up to 16 independent commands; useful for test-only evaluation.
-- `src/tools/viewer2-batch-tool.ts`: optional MCP read-commands-batch tool; every command individually uses the **existing** `runAudited()` central pipeline, the **existing** classifier, the per-profile policy and the `enforceClass: 'read-only'` rule. It does not activate the experimental matcher.
+- `src/tools/viewer2-batch-tool.ts`: optional MCP read-commands-batch tool; every command individually uses the **existing** `runAudited()` central pipeline, the **existing** classifier, the per-profile policy and the `enforceClass: 'read-only'` rule. The batch tool receives the central classifier's current decision (including per-profile Viewer2 opt-in) and cannot override a deny decision.
 - `src/tools/registry.ts`: registers this new tool.
 - `test/unit/policy/viewer2*.test.ts`: positive matching and negative injection tests.
 
@@ -61,3 +61,10 @@ No manual action required for isolated development. Before production: confirm a
 ## Viewer2 opt-in configuration (source branch only)
 
 The profile schema accepts `viewer2Packs = ["linux", "network", "vpn", "openwrt", "macos"]` with only the host-specific subsets needed, e.g. `viewer2Packs = ["linux", "network", "vpn"]` for an explicitly approved Viewer host. The property defaults to `[]`, and **must not be placed into any production config until the separately gated rollout**. It does not make `safe` generally allowed, and cannot overwrite an existing `destructive`/`privileged` classification or policy denylist.
+
+## Active probing is separate from passive diagnostics
+
+The `network` pack no longer allows generic `ping`. For ICMP probes, **both** a profile opt-in (`viewer2Packs = ["icmp"]`) and an exact literal-IP allowlist (`viewer2ProbeTargets = ["198.51.100.10"]`) are required. The IP is documentation-only and not a suggested endpoint. The former generic target-hostname matcher is intentionally removed. Loopback, link-local/metadata, multicast, unspecified and IPv4-mapped IPv6 targets are rejected even if configured. A bounded command grammar limits count and timeout; the normal policy, quota, audit and read-only tool gates still apply.
+
+No HTTP/TCP/TLS active diagnostic tool has been enabled, and no `curl`, `wget`, `nc`, shell pipelines, or unrestricted remote destinations are granted to Viewer.
+
