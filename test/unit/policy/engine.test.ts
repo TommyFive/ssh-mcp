@@ -102,6 +102,18 @@ describe('PolicyEngine', () => {
     expect(engine.evaluate('npm install', profile, 'run-command').decision).toBe('deny');
   });
 
+  it('requires an explicit IP-only allowlist for the separate ICMP pack', () => {
+    const plain = makeProfile({ role: 'viewer', group: 'prod', readOnly: true,
+      viewer2Packs: ['network', 'icmp'], approvalPolicy: 'deny' });
+    expect(engine.evaluate('ping -c 1 10.1.2.3', plain, 'read-command').decision).toBe('deny');
+    const scoped = { ...plain, viewer2ProbeTargets: ['10.1.2.3'] };
+    expect(engine.evaluate('ping -c 1 10.1.2.3', scoped, 'read-command').decision).toBe('allow');
+    expect(engine.evaluate('ping -c 1 10.1.2.4', scoped, 'read-command').decision).toBe('deny');
+    expect(engine.evaluate('ping -c 1 169.254.169.254', {
+      ...plain, viewer2ProbeTargets: ['169.254.169.254'],
+    }, 'read-command').decision).toBe('deny');
+  });
+
   describe('Viewer2 opt-in rights stay inside existing role bindings', () => {
     const viewer = makeProfile({ role: 'viewer', group: 'prod', readOnly: true, approvalPolicy: 'deny' });
     it('does not grant new rights unless explicitly opted in', () => {
