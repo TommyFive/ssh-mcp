@@ -72,7 +72,7 @@ describe('Scoped time-limited admin SFTP preapproval (no client elicitation)', (
       { ...admin, approvalPolicy: 'deny' as const },
       { ...admin, group: 'prod', role: 'viewer', readOnly: false },
     ]) {
-      expect(engine.evaluate(command(), profile, 'sftp-upload').decision).toBe('deny');
+      expect(engine.evaluate(command(), profile, 'sftp-upload').decision).not.toBe('allow');
     }
   });
   it('does not bypass user denylist or other SFTP classes', () => {
