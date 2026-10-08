@@ -51,7 +51,7 @@ export function registerSessionTools(
     'list-connections',
     D["list-connections"],
     {},
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async () => {
       // The one tool that reads only `listAllProfiles()` and so never touches
       // `getProfile`. Without this it answered an unconfigured server with a
@@ -78,7 +78,7 @@ export function registerSessionTools(
     'list-sessions',
     D["list-sessions"],
     { profile: z.string().optional().describe('Profile name (uses default if omitted)') },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     async ({ profile }) => {
       const conn = registry.get(profile);
       if (!conn || conn.listSessions().length === 0) {
@@ -102,11 +102,9 @@ export function registerSessionTools(
       command: z.string().optional().describe('Command for background sessions'),
       profile: z.string().optional().describe('Profile name (uses default if omitted)'),
     },
-    // No annotations object here on purpose. The SDK's overload resolution
-    // treats an EMPTY object as a Zod raw shape (isZodRawShape returns true for
-    // `{}`), so passing `{}` in the annotations slot made it consume the
-    // callback slot instead — leaving this tool registered with no handler and
-    // failing every call with "cb is not a function".
+    // A non-empty annotations object avoids the SDK overload ambiguity of `{}`.
+    // Background sessions can execute arbitrary commands, so this is a write tool.
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ name, type, command, profile }, extra) => {
       const cleanName = sanitizeSessionName(name);
       const isBackground = type === 'background' && Boolean(command);
@@ -148,7 +146,7 @@ export function registerSessionTools(
       name: z.string().describe('Session name to close'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ name, profile }, extra) => {
       const cleanName = sanitizeSessionName(name);
       // Both the profile name and the connection are resolved inside the try below. They
@@ -198,7 +196,7 @@ export function registerSessionTools(
       lines: z.number().optional().default(50).describe('Number of recent lines to read'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ name, lines, profile }) => {
       const conn = await resolveConn(profile);
       const session = conn.getSession(name);
