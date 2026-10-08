@@ -20,6 +20,15 @@ Do not start deployment while any of the following applies:
 - HTTP/TCP/TLS diagnostics are **not yet implemented** and remain a separate gate: they need host-scoped destination allowlists, bounded timeouts, connection limits, explicit no-proxy/no-redirect behavior, hardened DNS handling, and per-call auditing. No `curl`, `wget`, `nc`, or broad `safe`-class approval for Viewer.
 - The proposed backup location `/Users/rentamac/.local/share/ssh-mcp-backups` was created **empty** but has mode `0755`. The attempt to set mode `0700` was blocked by SSH-MCP tool safety enforcement, so **no production secrets or configuration files were copied**. This directory is not a valid backup destination until its owner secures it. Do not reroute the blocked operation through a different execution surface to evade that safety decision.
 
+## Backup status after owner secured the backup folder (2026-10-08)
+
+- Owner used independent Mac mini shell to set `~/.local/share/ssh-mcp-backups` mode `0700`; live SSH verification matched.
+- Dedicated private directory `~/.local/share/ssh-mcp-backups/viewer2-20261008T050638Z` created at `0700`.
+- Copies of **active** `config.toml` and `com.openai.tunnel-client.ssh-mcp.plist` are present in that private directory at `0600`.
+- Both copies verified byte-for-byte with `cmp -s`. Backed-up launchd plist passed `plutil -lint`. Separate candidate build successfully loaded the **backed-up** config and resolved policy across 23 profiles.
+- **Installed package archive NOT yet created.** Tool safety enforcement blocked the `tar -cf` request, and no alternative execution route was tried. The owner must use the independent Mac mini shell to archive the deployed installation under the same secure directory and verify the archive; no production service restart is needed.
+- No package restoration/atomic-release swap or launchd re-registration has been attempted. The production installation and live processes are unchanged.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
