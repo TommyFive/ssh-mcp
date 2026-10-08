@@ -1,4 +1,5 @@
 import { approvedSftpUpload } from './sftp-preapproval.js';
+import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
 import type {
   CommandClass,
   PolicyConfig,
@@ -308,6 +309,17 @@ export class PolicyEngine {
         ruleId: 'role-binding',
         reason: this.explainRoleDenial(profile, parsed.class),
       };
+    }
+
+    // Only an explicitly configured Admin workspace root may bypass MCP form
+    // elicitation for INLINE SFTP uploads. The file handler separately checks
+    // remote directory/file symlinks and publishes via staged SFTP rename.
+    // Client-side UI approval is not asserted or trusted by the MCP server.
+    if (approvalRequired && _toolName === 'sftp-upload' &&
+        parsed.class === 'destructive' && parsed.binary === 'sftp:upload' &&
+        approvedSftpWorkspaceRoot(command, profile)) {
+      return { decision: 'allow', commandClass: 'destructive',
+        binary: 'sftp:upload', ruleId: 'admin-sftp-workspace-scope' };
     }
 
     // Explicitly scoped 30-minute SFTP upload grants issued out-of-band from
