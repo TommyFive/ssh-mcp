@@ -15,7 +15,12 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
     /^systemctl list-timers(?: --all)? --no-pager$/,
     new RegExp('^systemctl (?:is-active|is-enabled|is-failed) ' + UNIT + '(?: ' + UNIT + '){0,9}$'),
     new RegExp('^systemctl show ' + UNIT + ' -p [A-Za-z][A-Za-z0-9]{0,80}$'),
-    /^journalctl --list-boots --no-pager$/,
+    /^journalctl --list-boots(?: --no-pager)?$/,
+    // Quoted, bounded relative periods from historical diagnostics; prohibit
+    // shell metacharacters and unbounded absolute timestamp/free-form phrases.
+    /^journalctl(?: -u [A-Za-z0-9_.@-]+)? --since '(?:[1-9]|1[0-9]|2[0-4]) hours? ago'(?: -p (?:warning|err|crit))? --no-pager$/,
+    /^journalctl(?: -u [A-Za-z0-9_.@-]+)? --since '(?:[1-9]|[1-5][0-9]) minutes? ago'(?: -p (?:warning|err|crit))? --no-pager$/,
+    /^journalctl -k -n (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500) --no-pager$/,
     new RegExp('^journalctl -u ' + UNIT + ' --since -[1-9][0-9]{0,2}(?:min|h|d) -n ' + LAST + ' --no-pager$'),
     new RegExp('^getent (?:hosts|ahostsv4|ahostsv6) ' + TARGET + '$'),
     /^sshd -T$/,
@@ -50,11 +55,19 @@ const matchers: Record<Viewer2Pack, readonly RegExp[]> = {
   openwrt: [
     new RegExp('^iw dev ' + NAME + ' station dump$'),
     new RegExp('^brctl showmacs ' + NAME + '$'),
+    /^hostname$/,
+    /^logread -l (?:[1-9]|[1-9][0-9]|[1-4][0-9]{2}|500)$/,
+    /^sysctl [A-Za-z0-9_.]+$/,
+    /^mwan3 (?:status|interfaces)$/,
+    /^opkg list-installed$/,
   ],
   macos: [
     /^pgrep -af [A-Za-z0-9_.:-]+$/,
     /^sw_vers$/,
     /^openclaw --version$/,
+    /^pmset -g(?: (?:assertions|sched|custom|cap|therm|ps|batt))?$/,
+    /^scutil --nc list$/,
+    /^scutil --nc status "[A-Za-z0-9_. -]{1,80}"$/,
   ],
 };
 
