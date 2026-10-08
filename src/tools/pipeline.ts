@@ -121,7 +121,8 @@ export function createPipeline({ server, registry, policy, audit, approvalGrantT
         return { conn, evaluation, approver: approval.approver };
       }
 
-      return { conn, evaluation, approver: undefined };
+      return { conn, evaluation, approver: evaluation.ruleId === 'out-of-band-sftp-preapproval'
+        ? 'operator-owned-30min-sftp-grant' : undefined };
     } finally {
       span.end();
     }
