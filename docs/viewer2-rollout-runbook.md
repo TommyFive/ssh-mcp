@@ -61,6 +61,16 @@ Do not start deployment while any of the following applies:
 
 **Final cutover still gated:** Before touching `/opt/homebrew/lib/node_modules/ssh-mcp`, verify a live *independent* SSH/Tailscale SSH or desktop recovery session outside the tunnel, establish a reversible atomic package switch with a bounded rollback path, and verify both old and new binaries after switch including actual SSH command policy, audit entries and tunnel reconnection. A successful stdio side-by-side test is not that live rollback proof. Keep PR draft/unmerged until explicit production gate is satisfied.
 
+## Prepared interactive cutover and rollback helper (NOT executed)
+
+- Local script: `~/.local/share/ssh-mcp-releases/viewer2-cutover-568d081.sh`; available on the Mac mini within a 0700 private directory. **It is not a source of additional authorization to deploy.**
+- `/bin/bash ~/.local/share/ssh-mcp-releases/viewer2-cutover-568d081.sh preflight` is read-only and has actually passed **14/14** runtime checks: secure backup/config, expected archive SHA, old and new versions, frozen binary SHA, symlink, 23 profiles, no Viewer2 or active-probe opt-ins, registered tunnel service, correct ownership, same filesystem.
+- Bash syntax validation passed. **The script's `activate` and `rollback` branches have NOT been executed or integration-tested against launchd.**
+- `activate` requires a real interactive terminal and typed `INDEPENDENT-ACTIVATE`. It moves the original global package aside to a timestamped sibling, renames the already validated inactive candidate into the original global path, records the rollback path, and requests a restart of **only** `com.openai.tunnel-client.ssh-mcp`. A failed shell operation attempts an immediate filesystem restore through an EXIT trap, but this is not a substitute for independent access.
+- `rollback` requires an interactive terminal and typed `RESTORE-ORIGINAL`. It restores the preserved installed package, using the stored rollback path, and restarts the SSH-MCP tunnel. The protected tar/config/plist backup remains available if the direct directory swap fails.
+- The cutover script has **no autonomous deadline watchdog**. The operator must keep a working independent SSH/Tailscale SSH session open during and after `activate` and perform `rollback` immediately if ChatGPT's MCP reconnection, viewer denials, admin behavior, or audit trail fails. Never run `activate` or `rollback` through the SSH-MCP connection being replaced.
+- Nothing was run that restarts the live tunnel or replaces the global binary; PR #1 remains Draft.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
