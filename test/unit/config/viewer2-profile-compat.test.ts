@@ -2,6 +2,38 @@ import { describe, expect, it } from 'vitest';
 import { profileSchema } from '../../../src/config/schema.js';
 import { classifyCommand } from '../../../src/policy/classifier.js';
 
+describe('Out-of-band SFTP approval configuration', () => {
+  const input = { name: 'mac-mini-admin', host: 'localhost', user: 'rentamac',
+    role: 'admin', readOnly: false };
+  const now = Date.now();
+  const issuedAt = new Date(now - 60_000).toISOString();
+  const expiresAt = new Date(now + 10 * 60_000).toISOString();
+  it('accepts exact absolute paths and defaults byte bound', () => {
+    const p = profileSchema.parse({ ...input, sftpUploadPreapproval: {
+      paths: ['/Users/rentamac/.cache/staging/payload.mjs'], issuedAt, expiresAt,
+    } });
+    expect(p.sftpUploadPreapproval?.maxBytes).toBe(65536);
+    expect(p.sftpUploadPreapproval?.paths).toEqual(['/Users/rentamac/.cache/staging/payload.mjs']);
+  });
+  it('denies directory prefixes, relative paths, dot segments, globs and extended grant windows', () => {
+    for(const path of [
+      '../payload.mjs', '/Users/x/../secret', '/Users/x/./secret',
+      '/Users/x//file', '/Users/x/*', '/Users/x/', '/Users/x/file name',
+    ]) {
+      expect(() => profileSchema.parse({ ...input, sftpUploadPreapproval: {
+        paths: [path], issuedAt, expiresAt,
+      } })).toThrow();
+    }
+    expect(() => profileSchema.parse({ ...input, sftpUploadPreapproval: {
+      paths: ['/tmp/file'], issuedAt,
+      expiresAt: new Date(now + 31 * 60_000).toISOString(),
+    } })).toThrow();
+    expect(() => profileSchema.parse({ ...input, sftpUploadPreapproval: {
+      paths: ['/tmp/file'], issuedAt, expiresAt, maxBytes: 100_000_000,
+    } })).toThrow();
+  });
+});
+
 describe('Viewer2 production-profile compatibility', () => {
   it('accepts existing legacy diagnostic extensions and empty Viewer2 opt-in', () => {
     const p = profileSchema.parse({
