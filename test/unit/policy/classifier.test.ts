@@ -59,6 +59,17 @@ describe('classifyCommand', () => {
     expect(classifyCommand('defaults write com.apple.finder ShowAllFiles -bool true', macos).class).toBe('safe');
   });
 
+  it('rejects historical false-read-only file and find writers', () => {
+    expect(classifyCommand('find /tmp -fprint0 /tmp/output').class).toBe('destructive');
+    expect(classifyCommand('find /tmp -fprint /tmp/output').class).toBe('destructive');
+    expect(classifyCommand('find /tmp -fprintf /tmp/output format').class).toBe('destructive');
+    expect(classifyCommand('file --compile -m /tmp/magic').class).toBe('destructive');
+    expect(classifyCommand('file -C -m /tmp/magic').class).toBe('destructive');
+    expect(classifyCommand('sort -o/tmp/out /tmp/data').class).toBe('destructive');
+    expect(classifyCommand('find /tmp -print0').class).toBe('read-only');
+    expect(classifyCommand('file -b /tmp/example').class).toBe('read-only');
+  });
+
   it('blocks generic sort and uniq write forms', () => {
     expect(classifyCommand('sort -o output input').class).toBe('destructive');
     expect(classifyCommand('uniq input output').class).toBe('destructive');
