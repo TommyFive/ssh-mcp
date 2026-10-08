@@ -10,6 +10,8 @@ export type ReadOnlyExtension =
   | 'linux-storage-diagnostics'
   | 'linux-login-diagnostics'
   | 'linux-process-diagnostics'
+  | 'linux-system-diagnostics'
+  | 'asus-merlin-diagnostics'
   | 'singbox-diagnostics'
   | 'macos-network-diagnostics'
   | 'macos-system-diagnostics';
