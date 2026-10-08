@@ -1,0 +1,53 @@
+# Viewer 2.0 — Experimental Phase A
+
+**Status:** Development branch only. Do **not** merge or deploy until a separate production approval. No VPS changes and no production SSH-MCP changes are included.
+
+## Source and baseline
+
+- Production mac-mini SSH-MCP observed on 2026-10-08: `2.2.5-readonly-extension.3`.
+- GitHub `main` is already `2.11.0-readonly-extension.3`; upgrading production is a **separate migration** and compatibility exercise.
+- Observed audit log: 6,331 events at the initial snapshot (2026-08-17 to 2026-10-08).
+- At the later replay snapshot: 532 denied events, 400 `safe` commands denied by role binding. Counts changed because the shared audit log is live and constantly appended.
+- An *independent* conservative matcher dry-run across those 400 events found 33 literal standalone commands matching the new positive-list prototype (**8.3%**). This is a simulation of the candidate regexes, **not** proof of runtime authorization and not a full replay of the built SSH-MCP.
+- Most remaining rejections concern shell sequences, pipes, filters, nonliteral quoting, and commands outside the existing positive list. The goal is to add these safely, not make `safe` executable by viewers.
+
+## Components included
+
+- `src/policy/viewer2.ts`: independent, deny-by-default prototype for the supported read-only command forms; **not wired into the production classifier**.
+- `src/policy/viewer2-batch.ts`: non-executing planner for up to 16 independent commands; useful for test-only evaluation.
+- `src/tools/viewer2-batch-tool.ts`: optional MCP read-commands-batch tool; every command individually uses the **existing** `runAudited()` central pipeline, the **existing** classifier, the per-profile policy and the `enforceClass: 'read-only'` rule. It does not activate the experimental matcher.
+- `src/tools/registry.ts`: registers this new tool.
+- `test/unit/policy/viewer2*.test.ts`: positive matching and negative injection tests.
+
+## Security invariants
+
+1. No `safe`/unknown blanket role authorization; Viewer still permits only `read-only` in production.
+2. No arbitrary command composition via `; && || | > <`, substitution, redirects or shell wrappers. The batch tool requires simple literal argv words.
+3. **Each** batch item is separately authorized and audited. Rejection of one item does not silently grant subsequent commands.
+4. Hard denylist, host-group binding and approval semantics remain unchanged. All commands use the central `runAudited()` pipeline.
+5. Active network probing (`nc`, `curl`, `iperf3`, `tcpdump`) and SFTP downloads are **not** activated.
+6. No broadening of paths or secret-reading permissions. The existing root-Viewer confidentiality issue remains a separate major security concern.
+7. Repository feature branch does not imply permission to patch the production SSH-MCP process, restart it, or change any remote machine.
+
+## Remaining Phase A work before readiness
+
+- Integrate the opt-in Viewer 2 matcher with the *current GitHub* classifier using its public extension APIs or an additive plugin hook, without bypassing its newer nested-command defenses.
+- Implement diagnostic capabilities as explicit operations with per-target allowlists and DNS-rebinding/SSRF safety. Do not disguise them as `read-only`.
+- End-to-end integration tests with simulated SSH targets, plus negative tests through all MCP entrypoints (run_command, sessions, SFTP).
+- Confirm CI typechecking, tests and package compatibility against the exact production version. A build of the newer GitHub code does not prove compatibility with the installed 2.2.5 fork.
+- Replay the entire raw audit in an isolated test environment using the *actual compiled* candidate classifier; current 33/400 is only an approximate rule-simulation.
+- Migration and rollback rehearsal without restarting any production MCP.
+- Obtain **separate explicit approval B** prior to editing the Mac mini production installation or production remote hosts.
+
+## Suggested deployment acceptance gates
+
+- Build and full unit/integration/security tests all green.
+- No formerly forbidden or mutating command is promoted to Viewer.
+- Audit log attribution preserved for every batch item.
+- Read-only reductions measured against the real replay and reviewed by human.
+- Access continuity through an independent recovery route verified.
+- Source version and production drift reconciled before any rollout.
+
+## Manual input
+
+No manual action required for isolated development. Before production: confirm approved diagnostic egress targets and ports, verify Mac mini alternate recovery access, and explicitly approve the production rollout and any SSH profile changes.
