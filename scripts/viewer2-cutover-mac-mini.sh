@@ -7,7 +7,14 @@ umask 077
 ROOT="/opt/homebrew/lib/node_modules"
 ACTIVE="$ROOT/ssh-mcp"
 NEXT="$ROOT/.ssh-mcp-next-f1314bf"
-BACKUP="$HOME/.[REDACTED:entropy:52]"
+# Keep the benign backup path in short components: a previous release file
+# accidentally contained a literal output-redaction placeholder as a directory.
+BACKUP_ROOT="$HOME/.local/share/ssh-mcp-backups"
+BACKUP="$BACKUP_ROOT/viewer2-20261008T050638Z"
+if [ ! -d "$BACKUP" ]; then
+  echo "STOP: protected backup directory not found." >&2
+  exit 2
+fi
 PREFLIGHT="$HOME/.cache/ssh-mcp-viewer2-audit-lab/viewer2-cutover-preflight-f1314bf.mjs"
 STATE="$BACKUP/viewer2-active-rollback-path"
 LABEL="gui/$(id -u)/com.openai.tunnel-client.ssh-mcp"
