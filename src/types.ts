@@ -53,6 +53,11 @@ export interface Profile {
     expiresAt: string;
     maxBytes: number;
   };
+  /** Persistent, explicitly configured Admin-only SFTP workspace policy.
+   * Never implies that a ChatGPT-side approval was cryptographically received.
+   * No default; bounded to absolute directories and byte cap.
+   */
+  sftpWorkspaceWrite?: { roots: string[]; maxBytes: number };
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
