@@ -35,6 +35,8 @@ export interface Profile {
   readOnly: boolean;
   /** Named, built-in, argument-checked read-only command packs. */
   readOnlyExtensions?: ReadOnlyExtension[];
+  /** Additive, opt-in Viewer2 read-only packs. Empty by default. */
+  viewer2Packs?: import('./policy/viewer2.js').Viewer2Pack[];
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**
