@@ -15,7 +15,7 @@ describe('MCP tool surface', () => {
     const { tools } = await h.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'close-session', 'list-connections', 'list-sessions', 'open-session',
-      'privileged-command', 'read-command', 'read-session-output',
+      'privileged-command', 'read-command', 'read-commands-batch', 'read-session-output',
       'run-command', 'sftp-download', 'sftp-download-file', 'sftp-list',
       'sftp-upload', 'sftp-upload-file', 'signal-process',
     ]);
@@ -30,7 +30,7 @@ describe('MCP tool surface', () => {
     // remote directory, while the download writes a file on local disk, which
     // is the whole reason it is classified destructive.
     expect(readOnly).toEqual([
-      'list-connections', 'list-sessions', 'read-command', 'read-session-output',
+      'list-connections', 'list-sessions', 'read-command', 'read-commands-batch', 'read-session-output',
       'sftp-download', 'sftp-list',
     ]);
   });
