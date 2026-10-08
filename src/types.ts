@@ -12,7 +12,12 @@ export type ReadOnlyExtension =
   | 'linux-process-diagnostics'
   | 'singbox-diagnostics'
   | 'macos-network-diagnostics'
-  | 'macos-system-diagnostics';
+  | 'macos-system-diagnostics'
+  | 'viewer2-linux-diagnostics'
+  | 'viewer2-network-diagnostics'
+  | 'viewer2-vpn-diagnostics'
+  | 'viewer2-openwrt-diagnostics'
+  | 'viewer2-macos-diagnostics';
 
 export interface Profile {
   name: string;
