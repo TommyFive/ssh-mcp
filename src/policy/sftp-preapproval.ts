@@ -1,4 +1,4 @@
-import { readFileSync, lstatSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { isExactSftpGrantPath } from '../config/schema.js';
@@ -20,13 +20,29 @@ export function readLocalSftpUploadGrant(profileName: string): SftpUploadGrant |
   const file = process.env.SSH_MCP_SFTP_GRANT_FILE || DEFAULT_GRANT_FILE;
   if (!isAbsolute(file)) return undefined;
   try {
+    // The directory must be owner-only, not a symlink. Open the file once with
+    // O_NOFOLLOW and validate the *opened descriptor*, not the pathname:
+    // lstat(path) followed by readFile(path) allowed a symlink-swap race.
     const dir = lstatSync(dirname(file));
-    const stat = lstatSync(file);
     if (!dir.isDirectory() || (dir.mode & 0o077) !== 0 ||
-        !stat.isFile() || (stat.mode & 0o077) !== 0 ||
-        stat.uid !== process.getuid?.() || dir.uid !== process.getuid?.() ||
-        stat.size < 2 || stat.size > MAX_GRANT_BYTES) return undefined;
-    const raw: unknown = JSON.parse(readFileSync(file, 'utf8'));
+        dir.uid !== process.getuid?.()) return undefined;
+    const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    let input: string;
+    try {
+      const stat = fstatSync(fd);
+      if (!stat.isFile() || (stat.mode & 0o077) !== 0 ||
+          stat.uid !== process.getuid?.() ||
+          stat.size < 2 || stat.size > MAX_GRANT_BYTES) return undefined;
+      // Bounded descriptor read: even a concurrent resize cannot make us read
+      // unbounded data or access a substituted pathname.
+      const buffer = Buffer.alloc(MAX_GRANT_BYTES + 1);
+      const read = readSync(fd, buffer, 0, buffer.length, 0);
+      if (read !== stat.size) return undefined;
+      input = buffer.subarray(0, read).toString('utf8');
+    } finally {
+      closeSync(fd);
+    }
+    const raw: unknown = JSON.parse(input);
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
     const x = raw as Record<string, unknown>;
     if (x.version !== 1 || x.profile !== profileName ||
