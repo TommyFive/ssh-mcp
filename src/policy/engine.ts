@@ -1,4 +1,4 @@
-import { isExactSftpGrantPath } from '../config/schema.js';
+import { approvedSftpUpload } from './sftp-preapproval.js';
 import type {
   CommandClass,
   PolicyConfig,
@@ -310,29 +310,16 @@ export class PolicyEngine {
       };
     }
 
-    // Explicit out-of-band operator authorization, *not* a reclassification.
-    // The protected profile config names exact files, immutable content size
-    // budgets, and a 30-minute issuance window. No MCP form elicitation is
-    // needed for this one narrowly authorized SFTP operation.
-    // Must come AFTER denylist and class/role checks; generic shell tools and
-    // Viewer/Operator profiles must not inherit the exception.
-    const pre = profile.sftpUploadPreapproval;
+    // Explicitly scoped 30-minute SFTP upload grants issued out-of-band from
+    // the operator-owned Mac mini config or a private grant file. Keep the
+    // command destructive and honor denylist, role binding and OPA checks.
     if (approvalRequired && _toolName === 'sftp-upload'
         && profile.role === 'admin' && !profile.readOnly
         && profile.approvalPolicy !== 'deny' && parsed.class === 'destructive'
-        && parsed.binary === 'sftp:upload' && pre) {
-      const now = Date.now();
-      const begin = Date.parse(pre.issuedAt), end = Date.parse(pre.expiresAt);
-      const limited = Number.isSafeInteger(pre.maxBytes)
-        && pre.maxBytes > 0 && pre.maxBytes <= 1_048_576
-        && Number.isFinite(begin) && Number.isFinite(end)
-        && now >= begin && now < end && end - begin <= 30 * 60_000;
-      const m = /^sftp:upload --overwrite --bytes=(0|[1-9][0-9]{0,8}) --sha256=[a-f0-9]{32} (\/[^\r\n]*)$/.exec(command);
-      if (limited && m && Number(m[1]) <= pre.maxBytes
-          && pre.paths.includes(m[2]) && isExactSftpGrantPath(m[2])) {
-        return { decision: 'allow', commandClass: 'destructive',
-          binary: 'sftp:upload', ruleId: 'out-of-band-sftp-preapproval' };
-      }
+        && parsed.binary === 'sftp:upload'
+        && approvedSftpUpload(command, profile)) {
+      return { decision: 'allow', commandClass: 'destructive',
+        binary: 'sftp:upload', ruleId: 'out-of-band-sftp-preapproval' };
     }
 
     if (approvalRequired) {
