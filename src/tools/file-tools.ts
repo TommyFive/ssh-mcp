@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { redactText } from '../guard/redactor.js';
 import { remotePathForAudit, sanitizeRemotePath } from '../guard/sanitizer.js';
 import { SftpClient } from '../ssh/sftp.js';
+import { Readable } from 'node:stream';
+import { approvedSftpWorkspaceRoot } from '../policy/sftp-workspace.js';
 import { OVERWRITE_FLAG, payloadSuffix } from './audit-effects.js';
 import { TOOL_DESCRIPTIONS as D } from './descriptions.js';
 import { syntheticSuccess, textResult } from './results.js';
@@ -50,7 +52,7 @@ export function registerFileTools(
       content: z.string().describe('File content to upload'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ remotePath, content, profile }, extra) => {
       return runAudited(
         // Verb, then what the operation does, then the path it does it to — and the
@@ -74,7 +76,25 @@ export function registerFileTools(
           preCheck: () => { sanitizeRemotePath(remotePath); },
         },
         async (rt) => {
-          await new SftpClient(rt.conn).upload({ remotePath, content });
+          const client = new SftpClient(rt.conn);
+          // A permanent operator-scoped workspace rule is a server-side
+          // authorization policy, not proof of the ChatGPT UI decision.
+          // Unlike the legacy inline upload (direct truncation), scoped
+          // uploads stage into a private .part file, reject path symlinks and
+          // publish with a guarded SFTP rename. Ordinary explicit approvals
+          // and out-of-band exact-file grants keep their existing semantics.
+          const scopedRoot = approvedSftpWorkspaceRoot(rt.command, rt.conn.profile);
+          if (scopedRoot) {
+            await client.uploadFile(Readable.from([Buffer.from(content, 'utf8')]), remotePath, {
+              maxBytes: rt.conn.profile.sftpWorkspaceWrite!.maxBytes,
+              idleTimeoutMs: rt.conn.profile.transferTimeoutMs,
+              abortSignal: rt.abortSignal,
+              overwrite: true,
+              scopedRoot,
+            });
+          } else {
+            await client.upload({ remotePath, content });
+          }
           return {
             audited: syntheticSuccess(rt.profileName),
             // utf8 bytes, matching the count the approved string already carries —
@@ -94,7 +114,7 @@ export function registerFileTools(
       remotePath: z.string().describe('Remote file path. No leading or trailing whitespace, and no control, bidirectional or zero-width characters: the approval prompt and the audit record quote this path back.'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ remotePath, profile }, extra) => {
       return runAudited(
         `sftp:download ${remotePathForAudit(remotePath)}`,

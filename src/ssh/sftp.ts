@@ -73,6 +73,8 @@ export interface TransferBounds {
 export interface UploadFileOptions extends TransferBounds {
   overwrite?: boolean;
   mode?: number;
+  /** Enables fail-closed remote-path checks for a configured Admin workspace. */
+  scopedRoot?: string;
 }
 
 export interface SftpListOptions {
@@ -421,6 +423,56 @@ export function publishRemote(
   });
 }
 
+/**
+ * Reject symlink escapes and targets with unusual file types for unattended,
+ * explicitly configured workspace writes. Every ancestor must be an actual
+ * directory with no group/other write bit: otherwise another account could
+ * race a lstat check by swapping a writable path for a symlink.
+ *
+ * Repeated before staged rename, with the same SFTP subsystem channel. This
+ * is intentionally stricter than ordinary operator-approved SFTP operations.
+ * The SSH account is trusted to manage its own owner-only workspace.
+ */
+export async function assertScopedSftpPath(
+  sftp: SFTPWrapper,
+  root: string,
+  remotePath: string,
+  opts: TransferBounds,
+): Promise<void> {
+  if (!root.startsWith('/') || root === '/' ||
+      !remotePath.startsWith(root + '/') ||
+      !/^\/(?:[A-Za-z0-9_@+.-]+\/)*[A-Za-z0-9_@+.-]+$/.test(remotePath) ||
+      remotePath.split('/').some(part => part === '..' || part === '.')) {
+    throw new Error('Scoped SFTP upload: destination is outside its configured root');
+  }
+
+  const parts = remotePath.slice(1).split('/');
+  let current = '';
+  for (let i = 0; i < parts.length; i++) {
+    current += '/' + parts[i];
+    const isTarget = i === parts.length - 1;
+    const checkedPath = current;
+    const stats = await callbackBeforeDeadline<Attributes | undefined>(
+      opts, 'Scoped SFTP lstat', (callback) => {
+        sftp.lstat(checkedPath, (err, attrs) => {
+          if (err && isTarget && statusCode(err) === STATUS_CODE.NO_SUCH_FILE) {
+            callback(undefined, undefined);
+          } else if (err) callback(new Error(`Scoped SFTP path rejected: ${checkedPath}: ${err.message}`));
+          else callback(undefined, attrs);
+        });
+      },
+    );
+    if (isTarget && stats === undefined) continue; // new regular file after rename
+    const kind = (stats?.mode ?? 0) & 0o170000;
+    if (isTarget ? kind !== 0o100000 : kind !== 0o040000) {
+      throw new Error(`Scoped SFTP path rejected (symlink or non-regular path): ${checkedPath}`);
+    }
+    if (!isTarget && ((stats?.mode ?? 0) & 0o022) !== 0) {
+      throw new Error(`Scoped SFTP path rejected (group/other writable directory): ${checkedPath}`);
+    }
+  }
+}
+
 export class SftpClient {
   constructor(private conn: SSHConnection) {}
 
@@ -493,6 +545,7 @@ export class SftpClient {
   async uploadFile(source: Readable, remotePath: string, opts: UploadFileOptions): Promise<number> {
     assertBounds(opts.idleTimeoutMs, opts.maxBytes, 'SFTP upload');
     return this.withSftp(async (sftp) => {
+      if (opts.scopedRoot) await assertScopedSftpPath(sftp, opts.scopedRoot, remotePath, opts);
       const exists = async () => callbackBeforeDeadline<boolean>(opts, 'SFTP upload stat', (callback) => {
         sftp.stat(remotePath, (err) => {
           if (!err) callback(undefined, true);
@@ -540,6 +593,10 @@ export class SftpClient {
           throw new Error('Refusing to overwrite a remote file created during transfer');
         }
 
+        // Recheck immediately before publication, after transfer and before
+        // replacing an existing filename. Rename replaces a final symlink
+        // atomically rather than following it; parent checks block escapes.
+        if (opts.scopedRoot) await assertScopedSftpPath(sftp, opts.scopedRoot, remotePath, opts);
         try {
           await publishRemote(sftp, temporary, remotePath, opts);
           published = true;

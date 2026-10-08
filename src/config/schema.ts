@@ -162,6 +162,14 @@ export function isExactSftpGrantPath(path: string): boolean {
     && path.split('/').every(piece => piece !== '.' && piece !== '..');
 }
 
+// Explicitly configured, non-expiring Admin workspace roots. No default grant.
+// Destination paths remain absolute, canonical and checked remotely for symlinks.
+const sftpWorkspaceWriteSchema = z.object({
+  roots: z.array(z.string().refine(isExactSftpGrantPath,
+    'must be an exact absolute POSIX directory path without dot components')).min(1).max(8),
+  maxBytes: z.number().int().positive().max(1_048_576).default(65_536),
+}).strict();
+
 const sftpUploadPreapprovalSchema = z.object({
   paths: z.array(z.string().refine(isExactSftpGrantPath, 'must be an exact absolute POSIX file path, without dot components')).min(1).max(16),
   issuedAt: z.string().datetime({ offset: true }),
@@ -203,6 +211,7 @@ export const profileSchema = z.object({
   viewer2Packs: z.array(z.enum(['linux', 'network', 'vpn', 'openwrt', 'macos', 'icmp'])).default([]),
   viewer2ProbeTargets: z.array(z.string().refine(isSafeProbeTarget, 'must be a permitted literal IPv4/IPv6 address')).max(32).default([]),
   sftpUploadPreapproval: sftpUploadPreapprovalSchema.optional(),
+  sftpWorkspaceWrite: sftpWorkspaceWriteSchema.optional(),
   cert: z.boolean().default(false),
   // A schema-level default rather than a [defaults] entry, like tty/readOnly/cert
   // above: which hosts an operator trusts with the announcement is a property of

@@ -20,7 +20,7 @@ export function registerCommandTools(
       command: z.string().describe('Read-only shell command (must be in the allowlist)'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ command, profile }, extra) => {
       return runAudited(
         command,
@@ -40,7 +40,7 @@ export function registerCommandTools(
       session: z.string().optional().describe('Run in an existing interactive session (stateful)'),
       tty: z.boolean().optional().describe('Allocate a pseudo-terminal'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ command, profile, session, tty }, extra) => {
       return runAudited(
         command,
@@ -71,7 +71,7 @@ export function registerCommandTools(
       command: z.string().describe('Command to execute with sudo'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ command, profile }, extra) => {
       return runAudited(
         command,
@@ -118,7 +118,7 @@ export function registerCommandTools(
       signal: z.enum(['INT', 'TERM', 'KILL']).default('TERM').describe('Signal to send'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ pid, signal, profile }, extra) => {
       return runAudited(
         `kill -${signal} ${pid}`,
