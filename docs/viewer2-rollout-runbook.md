@@ -29,6 +29,17 @@ Do not start deployment while any of the following applies:
 - **Installed package archive NOT yet created.** Tool safety enforcement blocked the `tar -cf` request, and no alternative execution route was tried. The owner must use the independent Mac mini shell to archive the deployed installation under the same secure directory and verify the archive; no production service restart is needed.
 - No package restoration/atomic-release swap or launchd re-registration has been attempted. The production installation and live processes are unchanged.
 
+## Package backup and isolated restore verification (2026-10-08)
+
+- The operator completed a manual package archive using their independent Mac mini terminal in the secure dated backup folder: `ssh-mcp-package.tar`, size **69,625,856 bytes**, mode `0600`.
+- Archive SHA-256: `bbe9930836c6176278fa05c52014871538621ade50b65156fb10decf5cdba5a8`. The archive contains the installed `ssh-mcp/package.json` and compiled `ssh-mcp/build/` content. The archive listing contained approximately 11,793 entries as returned by the remote tool.
+- Archive was extracted to a **separate** private directory: `/Users/rentamac/.cache/ssh-mcp-restore-check/ssh-mcp`. This action did not overwrite production paths.
+- Recursive file comparison using `diff -qr` between extracted and installed package returned **no differences** (the installed package had not been modified).
+- Restored `package.json` reports version `2.2.5-readonly-extension.3`. The restored baseline `loadConfig` successfully parsed the **backed-up** `config.toml` and returned 23 profiles: `RESTORED_BASELINE_LOAD_OK profiles=23`.
+- The pre-existing config/plist backup copies remain byte-identical to the installed files; copied launchd plist passed `plutil -lint`; candidate `2.11.0-readonly-extension.3` build also parsed backed-up config and resolved policy with 23 profiles.
+- **This is an isolated file and config restore, NOT a live rollback rehearsal.** It does not prove launchd restart, post-start MCP handshake, tunneling, or remote reconnect after service replacement. Keep the gate for those operations until maintenance/recovery checks are complete.
+- No production service, launchd job, configuration, package or OpenClaw process was changed.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
