@@ -50,7 +50,7 @@ export function registerFileTools(
       content: z.string().describe('File content to upload'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ remotePath, content, profile }, extra) => {
       return runAudited(
         // Verb, then what the operation does, then the path it does it to — and the
@@ -94,7 +94,7 @@ export function registerFileTools(
       remotePath: z.string().describe('Remote file path. No leading or trailing whitespace, and no control, bidirectional or zero-width characters: the approval prompt and the audit record quote this path back.'),
       profile: z.string().optional().describe('Profile name'),
     },
-    { readOnlyHint: true },
+    { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
     async ({ remotePath, profile }, extra) => {
       return runAudited(
         `sftp:download ${remotePathForAudit(remotePath)}`,
