@@ -99,6 +99,18 @@ The issuer requires an interactive terminal and the explicit text `APPROVE-30M-S
 
 The PR remains Draft until the live canary and post-cutover audit validate the full fixed workflow.
 
+## Second canary activation failure: literal redaction marker in rollback path (2026-10-08)
+
+The independent operator issued the exact-path 30-minute SFTP canary grant and `preflight` returned **15/15 passed**. During `activate`, the old global directory was renamed and the new candidate was moved to its place; then the script failed at line 63 while trying to open its state marker. **This was a cutover-helper defect, not an SSH-MCP package or SFTP authorization failure.**
+
+**Root cause proven:** the previous GitHub script source and its deployed Mac mini copy both contained a **literal redaction placeholder** in the `BACKUP` assignment instead of the real directory name. The path was not simply redacted when displayed: exact literal comparison against the expected backup path failed, and both downloaded sources contained the placeholder. This caused the attempted state-marker write to point to a nonexistent directory.
+
+**Safety/recovery:** the `trap rescue EXIT` handler executed. Live after the failure, the active package was **2.2.5-readonly-extension.3**, the SSH-MCP tunnel had relaunched, all 23 connections were available, the old `*.restored` backup marker remained and there was no pending active-rollback marker. The new candidate's inactive sibling directory was preserved. **No manual rollback was necessary after this failed second activation.**
+
+**Fix:** `scripts/viewer2-cutover-mac-mini.sh` and the deployed copy `~/.local/share/ssh-mcp-releases/viewer2-cutover-f1314bf.sh` now construct the non-secret backup path in two short components (`BACKUP_ROOT` plus the dated child) and refuse to start if the resulting backup directory is missing. The helper contains **no literal redaction placeholder**. Bash syntax and the live read-only preflight passed again (15/15). A new isolated simulation verified actual switch-to-new, switch-back-to-old and an injected failure during the second package rename. No `launchctl` command was executed in the simulation. CI now includes `test/unit/ops/viewer2-cutover-script.test.ts` to catch embedded redaction markers or missing rollback invariants before release.
+
+**Next attempt:** only after green CI on the latest exact PR commit, use the existing independent Mac mini SSH/Tailscale terminal to run the corrected helper's `preflight` and `activate`. The time-limited SFTP grant might need to be **reissued** before performing the live exact-file upload. Keep the independent session open, check the new process and live SFTP upload+download and audit, and roll back immediately if a gate fails. Do not run a fresh activation from the SSH-MCP tunnel being replaced.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
