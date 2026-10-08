@@ -80,9 +80,14 @@ export function isSafeProbeTarget(target: string): boolean {
     const [a, b] = s.split('.').map(Number);
     return a !== 0 && a !== 127 && a < 224 && !(a === 169 && b === 254);
   }
-  // IPv4-mapped addresses could bypass the IPv4 exclusions.
-  if (s.includes('ffff:')) return false;
-  return s !== '::' && s !== '::1' && !/^fe[89ab]/.test(s) && !s.startsWith('ff');
+  // Canonicalize expanded IPv6 before testing special ranges. In particular,
+  // 0:0:0:0:0:0:0:1 is loopback just like ::1.
+  let ip: string;
+  try { ip = new URL('http://[' + s + ']/').hostname.slice(1, -1); }
+  catch { return false; }
+  // Mapped IPv4 can conceal blocked IPv4 destinations, e.g. metadata IPs.
+  if (ip.includes('ffff:')) return false;
+  return ip !== '::' && ip !== '::1' && !/^fe[89ab]/.test(ip) && !ip.startsWith('ff');
 }
 
 /** No shell composition and no new active probe authorization without an
