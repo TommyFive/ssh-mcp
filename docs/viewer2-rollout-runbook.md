@@ -40,6 +40,25 @@ Do not start deployment while any of the following applies:
 - **This is an isolated file and config restore, NOT a live rollback rehearsal.** It does not prove launchd restart, post-start MCP handshake, tunneling, or remote reconnect after service replacement. Keep the gate for those operations until maintenance/recovery checks are complete.
 - No production service, launchd job, configuration, package or OpenClaw process was changed.
 
+## Side-by-side protocol and frozen release gate (2026-10-08)
+
+**Actual tested service path:** the live `com.openai.tunnel-client.ssh-mcp` LaunchAgent runs `tunnel-client ... --profile ...`. Its child process launches `node /opt/homebrew/bin/ssh-mcp --config=...`. The executable symlink resolves to `/opt/homebrew/lib/node_modules/ssh-mcp/build/index.js`, so the isolated restore and migration candidate match the **actual** production package.
+
+**MCP stdio compatibility:**
+- Restored 2.2.5 baseline and candidate 2.11.0 both completed MCP `initialize` and `tools/list` against the 23-profile backed-up config.
+- Baseline: 11 tools, 1 resource; candidate: 15 tools, 1 resource. No legacy tool removed. Added `read-commands-batch`, `sftp-list`, `sftp-upload-file`, `sftp-download-file`.
+- No existing tool field was removed and no new field became required. Ten tool input schemas differed in their raw JSON: nine have metadata-only changes; `signal-process.pid` retains `minimum: 1` and gains the JavaScript safe-integer maximum (`9007199254740991`).
+- Both binaries successfully handled **actual** local `list-connections` and `list-sessions` tool calls and reported 23 profiles. Tests did **not** open SSH connections, run remote commands, or execute service restarts.
+- The owner-only **staged release** at `~/.local/share/ssh-mcp-releases/ssh-mcp-2.11.0-568d081` is a private 0700 folder containing the exact compiled build, dependency tree, package.json and lockfile from Git commit `568d0815750f105b5bb34a8c18e5e5941f56b137`. Recursive build and dependency comparisons with that checkout found no differences.
+- This frozen candidate passed a fresh MCP stdio startup plus the two local tool calls. Exact SHA-256 of the release `build/index.js`: `b30b57c518e9456313f03d00d628deef35c3115d9ad04eb4af1fcaad6059e3f3`.
+- The release path is *not* installed globally. The live `ssh-mcp` executable, tunnel, OpenClaw and configuration have not been touched.
+
+**Current opt-in boundary:** No production profile has `viewer2Packs` enabled. The `network` pack now excludes all generic `ping`; `icmp` requires exact IP allowlisting. Unscoped `getent hosts`/DNS lookup was subsequently removed from the passive `linux` pack. HTTP/TCP/TLS are not enabled.
+
+**Audit behavior gate:** Latest tested snapshot had 1,669 Viewer records, with 1,205 historically allowed and 1,170 still allowed under the proposed opt-in policy. The 35 differences include 21 historical active ping calls now refused by default; the remaining 14 are mostly Tailscale probes/debug, sing-box config checks and sensitive or host-specific file/config reads. These require per-command acceptance or separate scoped opt-in. Do not restore unrestricted Viewer `safe` rights.
+
+**Final cutover still gated:** Before touching `/opt/homebrew/lib/node_modules/ssh-mcp`, verify a live *independent* SSH/Tailscale SSH or desktop recovery session outside the tunnel, establish a reversible atomic package switch with a bounded rollback path, and verify both old and new binaries after switch including actual SSH command policy, audit entries and tunnel reconnection. A successful stdio side-by-side test is not that live rollback proof. Keep PR draft/unmerged until explicit production gate is satisfied.
+
 ## Preflight evidence — read only, 2026-10-08
 
 - macOS 27.0.1.
