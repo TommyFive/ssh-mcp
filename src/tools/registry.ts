@@ -5,6 +5,7 @@ import type { AuditStore } from '../audit/store.js';
 import { createPipeline, type ToolDeps } from './pipeline.js';
 import { registerSessionTools } from './session-tools.js';
 import { registerCommandTools } from './command-tools.js';
+import { registerReadCommandsBatch } from './viewer2-batch-tool.js';
 import { registerFileTools } from './file-tools.js';
 import { registerTransferTools } from './transfer-tools.js';
 
@@ -34,6 +35,7 @@ export function registerTools(
 
   registerSessionTools(deps, pipeline);
   registerCommandTools(deps, pipeline);
+  registerReadCommandsBatch(deps, pipeline);
   registerFileTools(deps, pipeline);
   registerTransferTools(deps, pipeline);
 }
