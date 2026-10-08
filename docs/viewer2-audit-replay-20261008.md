@@ -63,3 +63,12 @@ These were **not** Viewer2 additions: they already slipped through the baseline 
 - Confirm a working independent SSH/Tailscale or Remote Desktop recovery session at rollout time (user says all exist), take dated backups, rehearse restoration without touching the live SSH-MCP tunnel.
 - The production installation is still `2.2.5-readonly-extension.3` and the candidate `2.11.0-readonly-extension.3` plus new Viewer2 changes.
 - **Do not merge/deploy until safety gates pass.** User's approval B authorizes a planned rollout, not bypassing these gates.
+
+
+## Follow-up replay after bounded compatibility additions
+
+A later *isolated* re-run added narrowly matched journal, OpenWrt and macOS passive diagnostics. Against the same 1,588 historical Viewer records, **1,113 of the 1,132 historically allowed operations remain allowed** and **19** would be denied by the candidate opt-in policy, compared with 35 in the first replay. **91** previously denied records are newly allowed in this overall comparison, including historical version differences (do not attribute all 91 to Viewer2 packs).
+
+The 19 remaining are mostly Tailscale, sing-box and low-frequency device-specific commands. These must be reviewed individually; they are not authorization to grant the general `safe` class. Active probes remain a separate egress/SSRF design decision. The current prototype includes a bounded `ping` form in the network pack; the risk and target scope of that form must be explicitly reviewed before production activation.
+
+The production SSH-MCP, its system service and config have not been changed by this replay.
