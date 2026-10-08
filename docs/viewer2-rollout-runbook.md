@@ -5,11 +5,20 @@
 Do not start deployment while any of the following applies:
 
 1. PR #1 is draft, failed, pending or unreviewed; all required CI checks including `security-scan` must be green.
-2. `src/policy/viewer2.ts` prototype is not integrated and explicitly opted into verified profiles.
-3. No full policy replay against the actual compiled candidate and representative denied audit corpus has been completed.
-4. New binary has not been verified against the **installed** SSH-MCP 2.2.5-readonly-extension.3 API and the currently installed config; GitHub main uses 2.11.0-readonly-extension.3.
-5. No known-good independent recovery channel (separate from the SSH-MCP tunnel) has been proved.
+2. The integrated `src/policy/viewer2.ts` is not tested against the exact current commit, or approved Viewer profiles have not been individually scoped for opt-in.
+3. The offline policy replay's intentional regressions (especially active network probes) have not been reviewed and approved. Run the replay again against the exact release candidate.
+4. The new binary has not passed a side-by-side MCP protocol/tool test of **installed** SSH-MCP 2.2.5-readonly-extension.3 and the candidate 2.11.0-readonly-extension.3. The candidate now parses all 23 existing profiles, but that alone is insufficient.
+5. Independent recovery access via SSH/Tailscale SSH/Remote Desktop has been confirmed by the operator but not yet demonstrated live during a controlled maintenance window.
 6. No tested rollback path exists or no person can restore the Mac mini if SSH-MCP or the tunnel stops.
+
+## 2026-10-08 development findings and no-deploy guards
+
+- GitHub CI run #37724249747 passed on the earlier head; **recheck latest head** after adding ICMP target gates.
+- The isolated candidate build accepted all **23** deployed profiles only after restoring the two named legacy packs (`linux-system-diagnostics` and `asus-merlin-diagnostics`). Their regex rules were copied from the installed baseline and kept within the shell-control gate.
+- Real audit replay showed up to 19 historical allow-to-deny differences while `ping` was in the generic network pack. **That unrestricted active probe form was removed.** Later replay found ~40 regressions, including 21 historic ICMP calls intentionally denied until explicit target allowlisting. Counts may increase as the live audit grows. The security improvement is intentional; do not restore arbitrary destination probing to make a metric look better.
+- The `network` pack is **passive only**. The new `icmp` pack needs BOTH `viewer2Packs = ["icmp"]` and `viewer2ProbeTargets = ["198.51.100.1"]` (example reserved IP, not a suggested live endpoint). Targets must be explicitly scoped, literal IPv4/IPv6 addresses, and must not be loopback, link-local, metadata, multicast or unspecified. No target is implicitly enabled. Network requests and DNS rebinding via hostname resolution are therefore excluded for this probe.
+- HTTP/TCP/TLS diagnostics are **not yet implemented** and remain a separate gate: they need host-scoped destination allowlists, bounded timeouts, connection limits, explicit no-proxy/no-redirect behavior, hardened DNS handling, and per-call auditing. No `curl`, `wget`, `nc`, or broad `safe`-class approval for Viewer.
+- The proposed backup location `/Users/rentamac/.local/share/ssh-mcp-backups` was created **empty** but has mode `0755`. The attempt to set mode `0700` was blocked by SSH-MCP tool safety enforcement, so **no production secrets or configuration files were copied**. This directory is not a valid backup destination until its owner secures it. Do not reroute the blocked operation through a different execution surface to evade that safety decision.
 
 ## Preflight evidence — read only, 2026-10-08
 
