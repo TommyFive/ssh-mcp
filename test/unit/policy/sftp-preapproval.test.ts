@@ -26,7 +26,9 @@ function make(override: Record<string, unknown> = {}) {
   process.env.SSH_MCP_SFTP_GRANT_FILE=f;
   return f;
 }
-describe('owner-only short-lived local SFTP preapprovals', () => {
+// Windows mode bits and getuid() cannot assert the POSIX owner-only grant contract.
+// On Windows the on-disk grant mechanism deliberately fails closed.
+describe.skipIf(process.platform === 'win32')('owner-only short-lived local SFTP preapprovals', () => {
   it('reads a securely owned file only for the named profile', () => {
     make();
     const grant=readLocalSftpUploadGrant('mac-mini-admin');
