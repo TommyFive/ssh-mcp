@@ -93,8 +93,8 @@ export function isViewer2ReadOnly(
   probeTargets: readonly string[] = [],
 ): boolean {
   if (typeof command !== 'string' || command.length < 1 || command.length > 5000) return false;
-  if (/[;&|<>\\x60$(){}\\n\\r\\\\]/.test(command)) return false;
-  if (/[\\x00-\\x1f\\x7f]/.test(command)) return false;
+  if (/[;&|<>\x60$(){}\n\r\\]/.test(command)) return false;
+  if (/[\x00-\x1f\x7f]/.test(command)) return false;
   if (!packs.every(p => Object.hasOwn(matchers, p))) return false;
   const active = /^ping(?: -6)? -c [1-5](?: -W [1-5])? ([A-Fa-f0-9:.]+)$/.exec(command);
   if (active) {
