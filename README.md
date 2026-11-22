@@ -14,6 +14,12 @@
 
 ---
 
+## Archived development branch
+
+Historical read-only diagnostic development is retained for provenance.
+Production host information, private paths and deployment instructions are not
+published here. Use `main` for supported current functionality.
+
 ## Quick Start
 
 ### 1. Install
@@ -25,7 +31,7 @@ npm install -g ssh-mcp
 ### Install the hardened TommyFive viewer build
 
 The `TommyFive/ssh-mcp` fork contains the argument-bounded viewer extensions
-used by the Mac mini deployment. Install the tagged build directly from GitHub:
+used by an earlier downstream diagnostic deployment. Install the tagged build directly from GitHub:
 
 ```bash
 npm install -g git+https://github.com/TommyFive/ssh-mcp.git#v2.11.0-readonly-extension.3
