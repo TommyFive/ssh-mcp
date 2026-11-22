@@ -11,7 +11,7 @@ const root = '/srv/workspace/documentation';
 const cmd = (path: string, bytes = 42) =>
   `sftp:upload --overwrite --bytes=${bytes} --sha256=${'a'.repeat(32)} ${path}`;
 const mkProfile = (changes: Record<string, unknown> = {}) => ({
-  name: 'mac-mini-admin',
+  name: 'example-admin',
   role: 'admin', group: 'prod', readOnly: false,
   approvalPolicy: 'ask-destructive',
   readOnlyExtensions: [], viewer2Packs: [],
