@@ -47,8 +47,11 @@ describe('ported profile extensions', () => {
       { remotePath: target, remoteWrite: true }).decision).toBe('deny');
     expect(engine.evaluate(command(), makeProfile({ ...admin(), approvalPolicy: 'deny' }),
       { remotePath: target, remoteWrite: true }).decision).toBe('deny');
+    // Upstream's hard-deny families, not a generic /etc prefix ban.
+    expect(engine.evaluate(command('/etc/cron.d/demo'), admin(),
+      { remotePath: '/etc/cron.d/demo', remoteWrite: true }).decision).toBe('deny');
     expect(engine.evaluate(command('/etc/passwd'), admin(),
-      { remotePath: '/etc/passwd', remoteWrite: true }).decision).toBe('deny');
+      { remotePath: '/etc/passwd', remoteWrite: true }).decision).not.toBe('allow');
   });
 
   it('does not grant an ancestor, sibling, dotfile, or oversized payload', () => {
