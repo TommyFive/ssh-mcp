@@ -20,7 +20,7 @@ function make(override: Record<string, unknown> = {}) {
   chmodSync(d, 0o700);
   const f = join(d, 'grant.json');
   const now = Date.now();
-  const g = { version:1, profile:'mac-mini-admin', paths:[path], maxBytes:1024,
+  const g = { version:1, profile:'example-admin', paths:[path], maxBytes:1024,
     issuedAt:new Date(now-5_000).toISOString(), expiresAt:new Date(now+300_000).toISOString(), ...override };
   writeFileSync(f,JSON.stringify(g),{mode:0o600});
   process.env.SSH_MCP_SFTP_GRANT_FILE=f;
@@ -31,7 +31,7 @@ function make(override: Record<string, unknown> = {}) {
 describe.skipIf(process.platform === 'win32')('owner-only short-lived local SFTP preapprovals', () => {
   it('reads a securely owned file only for the named profile', () => {
     make();
-    const grant=readLocalSftpUploadGrant('mac-mini-admin');
+    const grant=readLocalSftpUploadGrant('example-admin');
     expect(grant).toBeDefined();
     expect(hasValidSftpUploadGrant(cmd(), grant!)).toBe(true);
     expect(hasValidSftpUploadGrant(cmd(path+'-bad'), grant!)).toBe(false);
@@ -39,7 +39,7 @@ describe.skipIf(process.platform === 'win32')('owner-only short-lived local SFTP
   });
   it('authorizes a destructive admin SFTP via central policy with no elicitation', () => {
     const f = make();
-    const profile = {name:'mac-mini-admin',role:'admin',group:'dev',
+    const profile = {name:'example-admin',role:'admin',group:'dev',
       readOnly:false,approvalPolicy:'ask-destructive'} as Profile;
     const engine = new PolicyEngine(DEFAULT_RULES);
     const approved = engine.evaluate(cmd(), profile, 'sftp-upload');
@@ -55,28 +55,28 @@ describe.skipIf(process.platform === 'win32')('owner-only short-lived local SFTP
   });
   it('rejects exposed grant files, exposed parent folders and malformed scope', () => {
     const f=make();chmodSync(f,0o644);
-    expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
+    expect(readLocalSftpUploadGrant('example-admin')).toBeUndefined();
     chmodSync(f,0o600);chmodSync(join(f,'..'),0o755);
-    expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
+    expect(readLocalSftpUploadGrant('example-admin')).toBeUndefined();
   });
   it('rejects symlinked grant files even when the target is private', () => {
     const original = make();
     const moved = original + '-real';
     renameSync(original, moved);
     symlinkSync(moved, original);
-    expect(readLocalSftpUploadGrant('mac-mini-admin')).toBeUndefined();
+    expect(readLocalSftpUploadGrant('example-admin')).toBeUndefined();
   });
   it('rejects expired approvals, overly long windows, oversized caps and path traversal', () => {
     const now=Date.now();
     make({issuedAt:new Date(now-3_600_000).toISOString(), expiresAt:new Date(now-1_000).toISOString()});
-    const e=readLocalSftpUploadGrant('mac-mini-admin');
+    const e=readLocalSftpUploadGrant('example-admin');
     expect(e&&hasValidSftpUploadGrant(cmd(),e)).toBe(false);
     make({issuedAt:new Date(now-5000).toISOString(),expiresAt:new Date(now+3_600_000).toISOString()});
-    const over=readLocalSftpUploadGrant('mac-mini-admin');
+    const over=readLocalSftpUploadGrant('example-admin');
     expect(over&&hasValidSftpUploadGrant(cmd(),over)).toBe(false);
-    make({maxBytes:1_048_577});const big=readLocalSftpUploadGrant('mac-mini-admin');
+    make({maxBytes:1_048_577});const big=readLocalSftpUploadGrant('example-admin');
     expect(big&&hasValidSftpUploadGrant(cmd(),big)).toBe(false);
-    make();const ok=readLocalSftpUploadGrant('mac-mini-admin')!;
+    make();const ok=readLocalSftpUploadGrant('example-admin')!;
     expect(hasValidSftpUploadGrant(cmd('/Users/example/staged/../secret'),ok)).toBe(false);
     expect(hasValidSftpUploadGrant(cmd()+'; rm -rf /',ok)).toBe(false);
   });
