@@ -103,3 +103,18 @@ export function isLegacyV211ReadOnly(command: string, profile: Profile): boolean
   return LEGACY_V211_BASIC_READERS.has(binary) ||
     binary === 'sftp:list' || binary === 'sftp:download';
 }
+
+
+// Eleven precisely bounded, non-mutating help/version invocations which the
+// deployed 2.11 fork allowed through read-command but the upstream 2.27
+// grammar conservatively returns as 'safe'. No arbitrary operands, quoting,
+// shell syntax, redirects, paths or variable expansion are accepted.
+const LEGACY_V211_EXACT_HELP = new Set([
+  'find --help', 'find -h', 'find -v', 'find -n 3',
+  'file --help', 'file -v', 'diff --help', 'diff -h', 'diff -v',
+  'netstat --help', 'netstat -h',
+]);
+
+export function isLegacyV211ExactHelp(command: string): boolean {
+  return LEGACY_V211_EXACT_HELP.has(command);
+}

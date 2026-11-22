@@ -37,9 +37,10 @@ Pre-existing downstream profiles that explicitly opt in to Viewer2 or
 upstream 2.27.1 recognizes additional readers. Newly recognized commands
 remain classified `safe` for those opted-in profiles: an admin can use the
 ordinary execution tool under its existing policy, but `read-command` and
-read-only profiles do not silently gain access. The upstream classifier,
-mandatory deny rules, and shell-grammar checks remain authoritative; this
-compatibility gate can only restrict, never permit, a command.
+read-only profiles do not silently gain access. A finite list of eleven exact, harmless help/version commands restores their
+previous read-only classification. No arbitrary operands or shell syntax are
+allowed in that exception. The upstream mandatory deny rules, remote-write
+restrictions and shell-grammar protections remain authoritative.
 
 The opt-in condition is intentional: installations with no downstream
 diagnostic configuration receive the standard upstream 2.27.1 behavior.

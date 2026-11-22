@@ -8,7 +8,7 @@ import type {
 } from '../types.js';
 import { classifyCommand, findForbiddenMatch, formatReadOnlyRejection } from './classifier.js';
 import { isViewer2ReadOnly } from './viewer2.js';
-import { isExtensionReadOnly, isLegacyV211ReadOnly } from './legacy-readonly.js';
+import { isExtensionReadOnly, isLegacyV211ReadOnly, isLegacyV211ExactHelp } from './legacy-readonly.js';
 import { approvedSftpUpload } from './sftp-preapproval.js';
 import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
 import { normalizeRemotePath, normalizeRemotePathForWindows } from './remote-path.js';
@@ -368,6 +368,13 @@ export class PolicyEngine {
     if (legacyOptIn && parsed.class === 'read-only' &&
         !isLegacyV211ReadOnly(command, profile)) {
       parsed.class = 'safe';
+    }
+    // This finite, exact-string set preserves old benign help/version calls.
+    // Upstream's never-allowed commands, shell grammar and deny checks still
+    // run; this cannot authorize an arbitrary program or command argument.
+    if (legacyOptIn && parsed.class === 'safe' && isLegacyV211ExactHelp(command)) {
+      parsed.class = 'read-only';
+      parsed.readOnlyRejection = undefined;
     }
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);

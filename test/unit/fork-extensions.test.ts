@@ -38,6 +38,17 @@ describe('ported profile extensions', () => {
       expect(result.commandClass).toBe('read-only');
       expect(result.decision).toBe('allow');
     }
+    for (const cmd of ['find --help', 'find -h', 'find -v',
+      'find -n 3', 'file --help', 'file -v', 'diff --help',
+      'diff -h', 'diff -v', 'netstat --help', 'netstat -h']) {
+      const result = engine.evaluate(cmd, legacy);
+      expect(result.commandClass).toBe('read-only');
+      expect(result.decision).toBe('allow');
+    }
+    for (const cmd of ['find --help; sudo reboot',
+      'find /tmp -exec touch /tmp/unsafe {} ;', 'diff --help && sudo id']) {
+      expect(engine.evaluate(cmd, legacy).decision).toBe('deny');
+    }
     expect(engine.evaluate('sudo reboot', legacy).decision).toBe('deny');
     expect(engine.evaluate('rm -rf /tmp/example', legacy).decision).toBe('deny');
   });
