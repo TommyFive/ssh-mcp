@@ -158,17 +158,18 @@ claude mcp add --transport stdio ssh-mcp -- ssh-mcp
 
 ---
 
-## Tools (15)
+## Tools (16)
 
 | Tool | Purpose | readOnly | destructive |
 |------|---------|:--------:|:----------:|
 | `list-connections` | Discover available hosts and connection status | ✅ | — |
 | `list-sessions` | List active sessions per host | ✅ | — |
-| `open-session` | Create a named interactive (stateful) or background session (`ttlMs` sets that session's idle timeout: it may shorten the profile's, and lengthen it only up to `sessionBackgroundMaxMs` for a background session (the profile's own when that is `0`); `0` = never idle-expire is the profile's to set, not the call's) | — | — |
+| `open-session` | Create a named interactive (stateful) or background session (`ttlMs` sets that session's idle timeout: it may shorten the profile's, and lengthen it only up to `sessionBackgroundMaxMs` for a background session (the profile's own when that is `0`); `0` = never idle-expire is the profile's to set, not the call's) | — | ✅ |
 | `close-session` | Close a session. A background session's command is signalled (INT/TERM/KILL) before its channel is dropped | — | ✅ |
 | `read-session-output` | Read output from background sessions (e.g., `tail -f`) | ✅ | — |
 | `read-command` | Execute allowlisted read-only commands (`ls`, `cat`, `grep`, ...) | ✅ | — |
-| `run-command` | Execute arbitrary commands (destructive/privileged need approval, unless `approvalPolicy = "auto"`) | — | — |
+| `read-commands-batch` | Independently audit and execute at most 16 literal read-only commands | ✅ | — |
+| `run-command` | Execute arbitrary commands (destructive/privileged need approval, unless `approvalPolicy = "auto"`) | — | ✅ |
 | `privileged-command` | Execute with sudo (needs approval, unless `approvalPolicy = "auto"`) | — | ✅ |
 | `sftp-upload` | Upload a file via SFTP (replaces the destination unconditionally) | — | ✅ |
 | `sftp-download` | Download a file via SFTP | ✅ | — |
