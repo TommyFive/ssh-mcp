@@ -410,7 +410,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: npm audit
-        run: npm audit --audit-level=high || true
+        run: npm audit --audit-level=high
 
       - name: Dependency review
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v4 (branch, not a tag)
