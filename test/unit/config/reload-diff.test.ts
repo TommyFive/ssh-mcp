@@ -73,6 +73,17 @@ const FIELD_CLASS: Record<keyof Profile, { cls: FieldClass; changed: unknown }> 
   group: { cls: 'policy', changed: 'dev' },
   approvalPolicy: { cls: 'policy', changed: 'ask-all' },
   readOnly: { cls: 'policy', changed: true },
+  readOnlyExtensions: { cls: 'policy', changed: ['linux-system-diagnostics'] },
+  viewer2Packs: { cls: 'policy', changed: ['linux'] },
+  viewer2ProbeTargets: { cls: 'policy', changed: ['10.1.2.3'] },
+  sftpUploadPreapproval: { cls: 'policy', changed: {
+    paths: ['/srv/workspace/example.txt'],
+    issuedAt: '2026-11-22T00:00:00Z', expiresAt: '2026-11-22T00:15:00Z',
+    maxBytes: 65536,
+  } },
+  sftpWorkspaceWrite: { cls: 'policy', changed: {
+    roots: ['/srv/workspace'], maxBytes: 65536,
+  } },
   commandQuotaPerDay: { cls: 'policy', changed: 10 },
   maxChars: { cls: 'policy', changed: 200 },
   transferMaxBytes: { cls: 'policy', changed: 2000 },
