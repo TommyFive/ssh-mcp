@@ -5,6 +5,20 @@ export type ApprovalMode = 'auto' | 'ask-destructive' | 'ask-all' | 'deny';
 /** Which end of a command's output survives the `maxOutputBytes` cap. */
 export type OutputTruncation = 'head' | 'tail';
 
+export type ReadOnlyExtension =
+  | 'openwrt-diagnostics'
+  | 'tailscale-diagnostics'
+  | 'linux-network-diagnostics'
+  | 'linux-service-diagnostics'
+  | 'linux-storage-diagnostics'
+  | 'linux-login-diagnostics'
+  | 'linux-process-diagnostics'
+  | 'linux-system-diagnostics'
+  | 'asus-merlin-diagnostics'
+  | 'singbox-diagnostics'
+  | 'macos-network-diagnostics'
+  | 'macos-system-diagnostics';
+
 export interface Profile {
   name: string;
   host: string;
@@ -26,6 +40,29 @@ export interface Profile {
   outputTruncation: OutputTruncation;
   role: string;
   readOnly: boolean;
+  /** Named, built-in, argument-checked read-only command packs. */
+  readOnlyExtensions?: ReadOnlyExtension[];
+  /** Additive, opt-in Viewer2 read-only packs. Empty by default. */
+  viewer2Packs?: import('./policy/viewer2.js').Viewer2Pack[];
+  /** Explicit literal IPs allowed for opt-in, bounded ICMP tests. */
+  viewer2ProbeTargets?: string[];
+  /**
+   * Out-of-band, one-off approval for destructive SFTP inline uploads, restricted
+   * to exact absolute destination paths and a 30-minute window. No default.
+   * The operator must update the protected config and restart the sidecar to
+   * issue a new approval; a client without MCP elicitation cannot self-approve.
+   */
+  sftpUploadPreapproval?: {
+    paths: string[];
+    issuedAt: string;
+    expiresAt: string;
+    maxBytes: number;
+  };
+  /** Persistent, explicitly configured Admin-only SFTP workspace policy.
+   * Never implies that a ChatGPT-side approval was cryptographically received.
+   * No default; bounded to absolute directories and byte cap.
+   */
+  sftpWorkspaceWrite?: { roots: string[]; maxBytes: number };
   approvalPolicy: ApprovalMode;
   cert: boolean;
   /**

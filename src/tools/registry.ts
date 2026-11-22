@@ -8,6 +8,7 @@ import { registerCommandTools } from './command-tools.js';
 import { registerFileTools } from './file-tools.js';
 import { registerTransferTools } from './transfer-tools.js';
 import { registerConfigTools } from './config-tools.js';
+import { registerReadCommandsBatch } from './viewer2-batch-tool.js';
 
 // Re-exported so existing importers keep a single entry point for the tool layer.
 export { TOOL_DESCRIPTIONS, getToolHashes } from './descriptions.js';
@@ -40,6 +41,7 @@ export function registerTools(
   registerSessionTools(deps, pipeline);
   registerCommandTools(deps, pipeline);
   registerFileTools(deps, pipeline);
+  registerReadCommandsBatch(deps, pipeline);
   registerTransferTools(deps, pipeline);
   // Not given the pipeline: a reload runs no remote command, so it is neither
   // policy-gated nor quota-counted. The reloader writes its own audit record.

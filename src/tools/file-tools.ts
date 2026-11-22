@@ -2,6 +2,8 @@ import { z } from 'zod';
 import { redactText } from '../guard/redactor.js';
 import { remotePathForAudit, sanitizeRemotePath } from '../guard/sanitizer.js';
 import { SftpClient } from '../ssh/sftp.js';
+import { Readable } from 'node:stream';
+import { approvedSftpWorkspaceRoot } from '../policy/sftp-workspace.js';
 import { OVERWRITE_FLAG, payloadSuffix } from './audit-effects.js';
 import { TOOL_DESCRIPTIONS as D } from './descriptions.js';
 import { syntheticSuccess, textResult } from './results.js';
@@ -69,7 +71,19 @@ export function registerFileTools(
           preCheck: () => { sanitizeRemotePath(remotePath); },
         },
         async (rt) => {
-          await new SftpClient(rt.conn).upload({ remotePath, content });
+          const client = new SftpClient(rt.conn);
+          const scopedRoot = approvedSftpWorkspaceRoot(rt.command, rt.conn.profile);
+          if (scopedRoot && rt.evaluation?.ruleId === 'admin-sftp-workspace-scope') {
+            await client.uploadFile(Readable.from([Buffer.from(content, 'utf8')]), remotePath, {
+              maxBytes: rt.conn.profile.sftpWorkspaceWrite!.maxBytes,
+              idleTimeoutMs: rt.conn.profile.transferTimeoutMs,
+              abortSignal: rt.abortSignal,
+              overwrite: true,
+              scopedRoot,
+            });
+          } else {
+            await client.upload({ remotePath, content });
+          }
           return {
             audited: syntheticSuccess(rt.profileName),
             // utf8 bytes, matching the count the approved string already carries —

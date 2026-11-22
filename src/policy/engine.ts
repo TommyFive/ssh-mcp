@@ -7,6 +7,10 @@ import type {
   ApprovalMode,
 } from '../types.js';
 import { classifyCommand, findForbiddenMatch, formatReadOnlyRejection } from './classifier.js';
+import { isViewer2ReadOnly } from './viewer2.js';
+import { isExtensionReadOnly } from './legacy-readonly.js';
+import { approvedSftpUpload } from './sftp-preapproval.js';
+import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
 import { normalizeRemotePath, normalizeRemotePathForWindows } from './remote-path.js';
 import { findNeverAllowedWriteTarget, neverAllowedWriteLabel } from './never-allowed-writes.js';
 import { OperatorError } from '../errors.js';
@@ -344,6 +348,16 @@ export class PolicyEngine {
     resource: PolicyResource = {},
   ): PolicyEvaluation {
     const parsed = classifyCommand(command);
+    // Promote ONLY an upstream 'safe' result for a strictly literal, opt-in
+    // diagnostic matcher. Never downgrade destructive/privileged classifications.
+    // Upstream built-in denials and remote write-path restrictions still govern.
+    if (parsed.class === 'safe' && (
+        isViewer2ReadOnly(command, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? [])
+        || isExtensionReadOnly(command, profile.readOnlyExtensions ?? [])
+    )) {
+      parsed.class = 'read-only';
+      parsed.readOnlyRejection = undefined;
+    }
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);
     // Copied onto every branch below rather than just the role-binding one:
@@ -378,6 +392,27 @@ export class PolicyEngine {
         reason: this.explainRoleDenial(profile, parsed),
         readOnlyRejection,
       };
+    }
+
+    // Independent Admin SFTP authorization is deliberately narrower than
+    // approval of general shell commands. Never bypass upstream deny rules,
+    // remote-write protections, role bindings, or the later OPA check.
+    if (approvalRequired && resource.remoteWrite &&
+        parsed.class === 'destructive' && parsed.binary === 'sftp:upload' &&
+        profile.role === 'admin' && !profile.readOnly &&
+        profile.approvalPolicy !== 'deny' &&
+        /^sftp:upload --overwrite --bytes=/.test(command) &&
+        approvedSftpWorkspaceRoot(command, profile)) {
+      return { decision: 'allow', commandClass: parsed.class,
+        binary: parsed.binary, ruleId: 'admin-sftp-workspace-scope' };
+    }
+    if (approvalRequired && resource.remoteWrite &&
+        parsed.class === 'destructive' && parsed.binary === 'sftp:upload' &&
+        profile.role === 'admin' && !profile.readOnly &&
+        profile.approvalPolicy !== 'deny' &&
+        approvedSftpUpload(command, profile)) {
+      return { decision: 'allow', commandClass: parsed.class,
+        binary: parsed.binary, ruleId: 'out-of-band-sftp-preapproval' };
     }
 
     if (approvalRequired) {
@@ -437,7 +472,7 @@ export class PolicyEngine {
       const remotePath = resource.remotePath || undefined;
       const input = {
         subject: { role: profile.role, profile: profile.name },
-        action: { tool: toolName, commandClass: parsed.class },
+        action: { tool: toolName, commandClass: local.commandClass },
         resource: {
           command: parsed.fullCommand,
           binary: parsed.binary,

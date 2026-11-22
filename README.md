@@ -15,6 +15,18 @@
 
 ---
 
+## Downstream opt-in security extensions
+
+This fork additionally supports literal-command diagnostic packs, independently
+audited batch reads, and optional scoped Admin SFTP uploads with short-lived
+out-of-band authorizations. These integrations are **disabled by default**.
+They do not authenticate ChatGPT UI approval; authorization is enforced by the
+server and remains subject to upstream's mandatory denial rules.
+
+See [Fork extension design and security contract](docs/fork-extensions.md).
+Do not commit operator-specific host inventories, production configuration,
+deployment notes, SSH fingerprints, or private keys.
+
 ## Quick Start
 
 ### 1. Install
