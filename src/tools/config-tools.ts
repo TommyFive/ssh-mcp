@@ -25,7 +25,7 @@ export function registerConfigTools({ server, reloader }: Pick<ToolDeps, 'server
         .describe('"status" (default) reports the loaded config; "reload" re-reads and applies the file'),
     },
     // A reload can close connections and their sessions.
-    { destructiveHint: true },
+    { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ action = 'status' }, extra): Promise<ToolResult> => {
       if (!reloader) {
         return { ...textResult('Config reload is not available on this server.'), isError: true };

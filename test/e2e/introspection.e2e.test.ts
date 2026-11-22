@@ -29,7 +29,7 @@ import { SERVER_ENTRY, serverBuilt } from './harness.js';
  */
 
 /** The complete registered set. A reduced list would mean the config had leaked into the metadata. */
-const TOOL_COUNT = 15;
+const TOOL_COUNT = 16;
 
 /**
  * Every tool description, as a client receives it.
@@ -52,6 +52,7 @@ const TOOL_DESCRIPTIONS: Record<string, string> = {
   "open-session": "Open a named session on a remote host. Use type=\"interactive\" for stateful shell (CWD/env persists between commands) or type=\"background\" for long-running processes.",
   "close-session": "Close a named session. A background session's command is signalled on the host (INT, then TERM, then KILL) before its channel is dropped; an interactive session's shell is ended. The response says so if the command could not be signalled or had not stopped in time.",
   "read-session-output": "Read recent output from a background session (e.g., tail -f logs).",
+  "read-commands-batch": "Run up to 16 independently audited, strictly literal read-only commands on one explicitly configured profile. No shell syntax, pipes, privilege escalation, or automatic write grants.",
   "read-command": "Execute a READ-ONLY command from an allowlist (ls, cat, grep, find, stat, df, etc.). This tool does NOT modify the system. Prefer this tool for all read operations. Single-line only: a command containing a line break is refused, so upload a multi-line script with sftp-upload and run it by path.",
   "run-command": "Execute an arbitrary shell command on the remote server. May modify the system. Commands classified destructive or privileged go through the approval gate; approvalPolicy on the profile decides whether that is a prompt, an automatic allow, or a refusal. Single-line only: a command containing a line break is refused, so upload a multi-line script with sftp-upload and run it by path.",
   "privileged-command": "Execute a command with sudo elevation. Goes through the approval gate; approvalPolicy on the profile decides whether that is a prompt, an automatic allow, or a refusal. The sudo password is piped via stdin for the prompt only (never visible in process list); the command itself runs with stdin at /dev/null, so it can never read the password back. Single-line only: a command containing a line break is refused, so upload a multi-line script with sftp-upload and run it by path.",

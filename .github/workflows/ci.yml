@@ -385,6 +385,14 @@ jobs:
       # first two are throwaway test fixtures; .oss-scanner/Dockerfile is the
       # OSS Scanner's image, whose agent runs as root to start those servers.
 
+      - name: Reject operator-specific public documentation
+        shell: bash
+        run: |
+          if git grep -nEi '(/Users/rentamac|mac-mini-admin|new-mac-mini|photonicat|salty[[:space:]]+vps|com\\.openai\\.tunnel-client\\.ssh-mcp)' -- README.md docs scripts; then
+            echo "::error::Operator-specific infrastructure details must not be published."
+            exit 1
+          fi
+
       - name: gitleaks
         uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
@@ -499,7 +507,7 @@ jobs:
           # Nothing links them, so adding a tool means editing all of them, and
           # this is the one no local run catches: the whole suite went green with
           # the image still expecting eleven, and again with it expecting 14.
-          TOOL_COUNT: '15'
+          TOOL_COUNT: '16'
         run: |
           set -euo pipefail
           {
