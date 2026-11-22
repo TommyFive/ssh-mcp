@@ -73,7 +73,7 @@ export function registerFileTools(
         async (rt) => {
           const client = new SftpClient(rt.conn);
           const scopedRoot = approvedSftpWorkspaceRoot(rt.command, rt.conn.profile);
-          if (scopedRoot && rt.evaluation?.ruleId === 'admin-sftp-workspace-scope') {
+          if (scopedRoot) {
             await client.uploadFile(Readable.from([Buffer.from(content, 'utf8')]), remotePath, {
               maxBytes: rt.conn.profile.sftpWorkspaceWrite!.maxBytes,
               idleTimeoutMs: rt.conn.profile.transferTimeoutMs,
