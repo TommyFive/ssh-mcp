@@ -14,9 +14,12 @@
 
 ---
 
-## Viewer 2.0 — verified Mac mini deployment (2026-10-08)
+## Downstream extensions (archived branch)
 
-The Mac mini SSH-MCP service is running `2.11.0-readonly-extension.3` with **23 individually opted-in profiles** and passive OS-specific diagnostics. See the [production handover](docs/viewer2-production-2026-10-08.md) for roles, system-specific packs, real acceptance tests, exact-file time-limited Admin SFTP approval, recovery lessons, and **the security fix merged into `main` but not yet deployed on the Mac mini**. The [historical cutover runbook](docs/viewer2-rollout-runbook.md) is retained for evidence and recovery; do not treat it as an upgrade recipe for later versions.
+This archived branch contains optional diagnostic extensions. Host inventories,
+private account names, live configuration, deployment records and machine-specific
+rollback instructions belong in protected operator records, not public GitHub.
+The maintained code and security fixes are now on `main`.
 
 ## Quick Start
 
@@ -29,7 +32,7 @@ npm install -g ssh-mcp
 ### Install the hardened TommyFive viewer build
 
 The `TommyFive/ssh-mcp` fork contains the argument-bounded viewer extensions
-used by the Mac mini deployment. Install the tagged build directly from GitHub:
+used by an earlier downstream diagnostic deployment. Install the tagged build directly from GitHub:
 
 ```bash
 npm install -g git+https://github.com/TommyFive/ssh-mcp.git#v2.11.0-readonly-extension.3
