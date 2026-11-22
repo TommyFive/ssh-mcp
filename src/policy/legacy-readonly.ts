@@ -1,4 +1,5 @@
-import type { ReadOnlyExtension } from '../types.js';
+import type { ReadOnlyExtension, Profile } from '../types.js';
+import { isViewer2ReadOnly } from './viewer2.js';
 
 // Imported literal-command allowlists from the existing fork. Never grant a
 // class higher than 'safe', and only after upstream's mandatory deny checks.
@@ -77,4 +78,43 @@ const READ_ONLY_EXTENSION_MATCHERS: Record<ReadOnlyExtension, readonly RegExp[]>
 export function isExtensionReadOnly(command: string, extensions: readonly ReadOnlyExtension[]): boolean {
   return !SHELL_CONTROL_CHARS.test(command)
     && extensions.some((extension) => READ_ONLY_EXTENSION_MATCHERS[extension].some((matcher) => matcher.test(command)));
+}
+
+
+// The deployed 2.11 fork exposed a narrower read-only tool surface than
+// upstream 2.27.1. Opted-in legacy diagnostic profiles must not silently gain
+// additional read-command privileges. This is an UPPER BOUND on upstream's
+// classification, never an alternative authorization or shell parser.
+const LEGACY_V211_BASIC_READERS = new Set([
+  'ls', 'cat', 'grep', 'find', 'stat', 'df', 'du', 'head', 'tail', 'wc',
+  'ps', 'uname', 'uptime', 'id', 'who', 'whoami',
+  'printenv', 'pwd', 'echo', 'printf', 'test', 'true', 'false',
+  'which', 'whereis', 'file', 'readlink', 'realpath', 'basename', 'dirname',
+  'seq', 'cut', 'tr', 'diff', 'comm', 'free', 'top', 'htop',
+  'iostat', 'vmstat', 'netstat', 'dig', 'nslookup', 'host',
+]);
+
+export function isLegacyV211ReadOnly(command: string, profile: Profile): boolean {
+  if (SHELL_CONTROL_CHARS.test(command)) return false;
+  if (isViewer2ReadOnly(command, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []) ||
+      isExtensionReadOnly(command, profile.readOnlyExtensions ?? [])) return true;
+  const first = command.trim().split(/\s+/, 1)[0] ?? '';
+  const binary = first.replace(/^['"]|['"]$/g, '').split('/').pop() ?? '';
+  return LEGACY_V211_BASIC_READERS.has(binary) ||
+    binary === 'sftp:list' || binary === 'sftp:download';
+}
+
+
+// Eleven precisely bounded, non-mutating help/version invocations which the
+// deployed 2.11 fork allowed through read-command but the upstream 2.27
+// grammar conservatively returns as 'safe'. No arbitrary operands, quoting,
+// shell syntax, redirects, paths or variable expansion are accepted.
+const LEGACY_V211_EXACT_HELP = new Set([
+  'find --help', 'find -h', 'find -v', 'find -n 3',
+  'file --help', 'file -v', 'diff --help', 'diff -h', 'diff -v',
+  'netstat --help', 'netstat -h',
+]);
+
+export function isLegacyV211ExactHelp(command: string): boolean {
+  return LEGACY_V211_EXACT_HELP.has(command);
 }
