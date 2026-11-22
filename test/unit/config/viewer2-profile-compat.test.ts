@@ -3,7 +3,7 @@ import { profileSchema } from '../../../src/config/schema.js';
 import { classifyCommand } from '../../../src/policy/classifier.js';
 
 describe('Out-of-band SFTP approval configuration', () => {
-  const input = { name: 'example-admin', host: 'localhost', user: 'rentamac',
+  const input = { name: 'example-admin', host: 'localhost', user: 'exampleuser',
     role: 'admin', readOnly: false };
   const now = Date.now();
   const issuedAt = new Date(now - 60_000).toISOString();
