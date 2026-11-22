@@ -3,17 +3,17 @@ import { profileSchema } from '../../../src/config/schema.js';
 import { classifyCommand } from '../../../src/policy/classifier.js';
 
 describe('Out-of-band SFTP approval configuration', () => {
-  const input = { name: 'mac-mini-admin', host: 'localhost', user: 'rentamac',
+  const input = { name: 'example-admin', host: 'localhost', user: 'rentamac',
     role: 'admin', readOnly: false };
   const now = Date.now();
   const issuedAt = new Date(now - 60_000).toISOString();
   const expiresAt = new Date(now + 10 * 60_000).toISOString();
   it('accepts exact absolute paths and defaults byte bound', () => {
     const p = profileSchema.parse({ ...input, sftpUploadPreapproval: {
-      paths: ['/Users/rentamac/.cache/staging/payload.mjs'], issuedAt, expiresAt,
+      paths: ['/Users/exampleuser/.cache/staging/payload.mjs'], issuedAt, expiresAt,
     } });
     expect(p.sftpUploadPreapproval?.maxBytes).toBe(65536);
-    expect(p.sftpUploadPreapproval?.paths).toEqual(['/Users/rentamac/.cache/staging/payload.mjs']);
+    expect(p.sftpUploadPreapproval?.paths).toEqual(['/Users/exampleuser/.cache/staging/payload.mjs']);
   });
   it('denies directory prefixes, relative paths, dot segments, globs and extended grant windows', () => {
     for(const path of [

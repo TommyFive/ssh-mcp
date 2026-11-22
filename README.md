@@ -14,24 +14,11 @@
 
 ---
 
-## ChatGPT approvals + optional scoped Admin SFTP writes
+## Archived downstream security extension
 
-ChatGPT may ask the user to approve a modifying tool such as `sftp-upload`, but
-its MCP `tools/call` does not attest that UI decision to the SSH-MCP server.
-The former server-side `elicitation/create` gate is unavailable on the tested
-ChatGPT connection. See the [scoped workspace SFTP opt-in and security
-considerations](docs/admin-sftp-workspace-2026-10-08.md): only explicitly
-configured Admin inline uploads under constrained, remotely checked directories
-may skip this **second** form. Viewer profiles, destructive shell commands,
-server-side deny rules and the user's ChatGPT approval prompts are unchanged.
-
-**The Mac mini has not yet been opted in to this feature.** The running binary
-still needs the reviewed upgrade and the private `mac-mini-admin` TOML
-configuration before any workspace write can use it.
-
-## Viewer 2.0 — verified Mac mini deployment (2026-10-08)
-
-The Mac mini SSH-MCP service is running `2.11.0-readonly-extension.3` with **23 individually opted-in profiles** and passive OS-specific diagnostics. See the [production handover](docs/viewer2-production-2026-10-08.md) for roles, system-specific packs, real acceptance tests, exact-file time-limited Admin SFTP approval, recovery lessons, and **the security fix merged into `main` but not yet deployed on the Mac mini**. The [historical cutover runbook](docs/viewer2-rollout-runbook.md) is retained for evidence and recovery; do not treat it as an upgrade recipe for later versions.
+This archived branch preserves the historical implementation, but intentionally
+does not publish production host inventory, accounts, rollout details, backups,
+or private deployment paths. The maintained fork is now on `main`.
 
 ## Quick Start
 
@@ -44,7 +31,7 @@ npm install -g ssh-mcp
 ### Install the hardened TommyFive viewer build
 
 The `TommyFive/ssh-mcp` fork contains the argument-bounded viewer extensions
-used by the Mac mini deployment. Install the tagged build directly from GitHub:
+used by an earlier downstream diagnostic deployment. Install the tagged build directly from GitHub:
 
 ```bash
 npm install -g git+https://github.com/TommyFive/ssh-mcp.git#v2.11.0-readonly-extension.3
