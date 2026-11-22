@@ -11,7 +11,7 @@
 # the tag, the same arrangement the four sshd images in docker-compose.yml
 # already use. Without that, a digest pin is how a base image quietly stays on
 # unpatched CVEs for a year — strictly worse than the moving tag it replaced.
-FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS builder
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c AS builder
 WORKDIR /app
 COPY package*.json ./
 # --ignore-scripts because `prepare` runs `npm run build`, and at this layer neither
@@ -20,14 +20,18 @@ COPY package*.json ./
 # the image, which is why nobody noticed. Copying the sources first would also work
 # but throws away dependency layer caching on every source change; the build runs
 # explicitly below, once there is something to compile.
+#
+# The flag also skips ssh2's optional native crypto binding, so the image runs
+# ssh2's JavaScript ciphers. That is a property of the image, not only of this
+# layer: moving off -slim to a base with a toolchain would not bring the binding
+# back while this flag stays. #315's chacha20 failure over a bastion was on that
+# JavaScript path, which CI covers in its own step.
 RUN npm ci --ignore-scripts
 COPY tsconfig.json ./
 COPY src/ ./src/
-# The build script uses a native Node helper; it must be present in the builder.
-COPY scripts/chmod-build.mjs ./scripts/chmod-build.mjs
 RUN npm run build
 
-FROM node:22-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
+FROM node:22-slim@sha256:43ac6c60b8f89723f746e8a92ce91abd5017e627ce1ddfe4238355d3a30b772c
 WORKDIR /app
 
 RUN groupadd -r -g 65532 appgroup && useradd -r -u 65532 -g appgroup appuser
@@ -42,8 +46,10 @@ COPY config.default.toml ./config.default.toml
 
 # 0700 because the loader refuses a config whose directory is group- or
 # world-readable, and mkdir under Docker's default umask produces 0755 — so a
-# container with a config bind-mounted at this path met that refusal on every
-# start, with no way to chmod a directory baked into the image (#138 review).
+# container with a config *file* bind-mounted into this directory met that
+# refusal on every start, with no way to chmod a directory baked into the image
+# (#138 review). It covers only that case: a *directory* bind-mounted at this
+# path replaces the image's, mode included, and has to be 0700 on the host.
 RUN mkdir -p /home/appuser/.config/ssh-mcp && \
     chmod 700 /home/appuser/.config /home/appuser/.config/ssh-mcp && \
     chown -R appuser:appgroup /home/appuser /app

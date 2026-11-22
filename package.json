@@ -1,7 +1,7 @@
 {
   "name": "ssh-mcp",
   "license": "MIT",
-  "version": "2.11.0-readonly-extension.3",
+  "version": "2.27.1",
   "description": "MCP server exposing policy-gated, audited SSH access for Linux and Windows hosts via the Model Context Protocol.",
   "mcpName": "io.github.tufantunc/ssh-mcp",
   "type": "module",
@@ -10,11 +10,12 @@
   },
   "scripts": {
     "prepare": "npm run build",
-    "build": "tsc && node scripts/chmod-build.mjs",
+    "build": "tsc && shx chmod +x build/*.js",
+    "build:coverage": "tsc --sourceMap && shx chmod +x build/*.js",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "inspect": "npx @modelcontextprotocol/inspector node build/index.js",
     "changeset": "changeset",
-    "version": "changeset version && node scripts/sync-server-json.mjs",
+    "version": "changeset version && node scripts/sync-server-json.mjs && node scripts/sync-lockfile-version.mjs",
     "test": "cross-env SSH_MCP_DISABLE_MAIN=1 vitest --run",
     "test:unit": "cross-env SSH_MCP_DISABLE_MAIN=1 vitest --run test/unit/ test/property/",
     "test:integration": "cross-env SSH_MCP_DISABLE_MAIN=1 vitest --run test/integration/",
@@ -27,11 +28,11 @@
     "build"
   ],
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.221.0",
-    "@opentelemetry/resources": "^2.9.0",
-    "@opentelemetry/sdk-node": "^0.221.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
+    "@opentelemetry/resources": "^3.0.0",
+    "@opentelemetry/sdk-node": "^0.300.0",
     "@opentelemetry/semantic-conventions": "^1.43.0",
     "smol-toml": "^1.7.1",
     "ssh2": "^1.17.0",
@@ -42,11 +43,13 @@
     "@changesets/cli": "^3.0.1",
     "@types/node": "^26.2.0",
     "@types/ssh2": "^1.15.5",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^5.0.2",
+    "ast-v8-to-istanbul": "^1.0.7",
     "cross-env": "^10.1.0",
     "fast-check": "^4.9.0",
+    "shx": "^0.4.0",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.5"
   },
   "homepage": "https://github.com/tufantunc/ssh-mcp#readme",
   "repository": {
@@ -73,6 +76,6 @@
     "node": "^18.19.0 || >=20.6.0"
   },
   "optionalDependencies": {
-    "@napi-rs/keyring": "^1.1.0"
+    "@napi-rs/keyring": "^2.1.1"
   }
 }

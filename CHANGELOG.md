@@ -1,5 +1,361 @@
 # ssh-mcp
 
+## 2.27.1
+
+### Patch Changes
+
+- [#342](https://github.com/tufantunc/ssh-mcp/pull/342) [`bdc4110`](https://github.com/tufantunc/ssh-mcp/commit/bdc41106bf72dfedc55cd8f64f0bdf1a2cc05d82) Thanks [@tufantunc](https://github.com/tufantunc)! - The classifier finds the end of every `$(…)`, `<(…)` and `>(…)` in one pass over the command. It looked for each one separately, so a command with many substitutions that never close took time in proportion to the square of its length (0.8 s for 60 KB; 0.26 s now). No class and no never-allowed answer changes.
+
+## 2.27.0
+
+### Minor Changes
+
+- [`949dc85`](https://github.com/tufantunc/ssh-mcp/commit/949dc85d9679777987918a8505a7d8bcf8a58049) Thanks [@tufantunc](https://github.com/tufantunc)! - The classifier now finds the program an interpreter is handed when options stand between the interpreter and the program. A shell's `-c` is a switch, so its program is the first operand wherever `-c` stands: `sh -c -- CMD`, `sh -c -e CMD`, `sh -o errexit -c CMD` and `bash --rcfile FILE -c CMD` are classified, and checked against the never-allowed list, as `CMD`. For the other interpreters the classifier knows the options that take no value and takes every other option to have one, so an option's value no longer hides the program flag behind it (`python3 -W ignore -c CODE`, `perl -I lib -e CODE`, `node -r ./x -e CODE`, `ruby -r json -e CODE`, `php -d a=b -r CODE`, `lua -l os -e CODE`, `osascript -l JavaScript -e CODE`), nor does a cluster of flags (`perl -lane CODE`) or a program attached to its flag (`perl -e'CODE'`). `vim`, `vi`, `ex`, `view`, `nvim` and `gdb` are read with their options after operands too (`vim FILE -c CMD`, `gdb PROG -ex CMD`), and vim's `+CMD` is read as `-c CMD`. This reading applies behind a command the classifier has no table entry for as well (`unshare -m sh -c -- CMD`, `docker exec NAME python3 -W ignore -c CODE`). Before, each of these was `safe`.
+  
+  More names are read as interpreters: a version after the name (`python3.11`, `perl5.36`, `php8.2`, `lua5.4`, `ksh93`), `mksh`, `pdksh`, `oksh`, `yash`, `rbash`, `posh`, `fish`, `csh`, `tcsh`, `nodejs`, `pypy`, `pypy3`, `jruby`, `luajit`, `nvim`, `rvim`, `rview`, `gview` and `gdb-multiarch`. More program flags are read: `php -B`, `-R`, `-E` and `--run`, `bun --eval`, `-p` and `--print`, and gdb's `-eval-command`, `-iex`, `-eiex` and their abbreviations with one dash or two.
+  
+  Upgrade notes:
+  
+  - The invocations above that ran without a prompt now follow the policy for a program handed to an interpreter: `destructive` for code the classifier does not read, and the class of the command itself for a shell's `-c`.
+  - An interpreter option the classifier does not know is taken to have a value. `python3 --some-new-flag run.py -c config.yml` is then read as `-c` handing `config.yml` to python and is `destructive`; with an option it knows (`python3 -u run.py -c config.yml`) the line keeps its class. Report such an option and it is added.
+  - `vim +q FILE`, `ex -s +'%s/a/b/' +wq FILE` and any other `+COMMAND` are `destructive`, and so is a `+/PATTERN` that holds a `|`. `vim +10 FILE`, `vim + FILE` and `vim +/pattern FILE` keep their class.
+  - `fish -c CMD`, `csh -c CMD` and `tcsh -c CMD` are `destructive` at least: their program is not read as POSIX shell text.
+  - A script's own arguments are not read: `python3 -u train.py -c config.yml`, `python3 -m gunicorn -c conf.py app` and `node server.js -p 3000` keep their class.
+
+- [`949dc85`](https://github.com/tufantunc/ssh-mcp/commit/949dc85d9679777987918a8505a7d8bcf8a58049) Thanks [@tufantunc](https://github.com/tufantunc)! - The command classifier now reads the shell's own grammar. A command inside a subshell or a brace group, in an `if`, loop or `case` block, in a function body, next to a redirection, in a `trap` action, behind `builtin`, `coproc` or `time`, in zsh's `repeat`, `foreach` and short loop forms, inside `=(…)` or `${ …; }`, in a `$(…)` that holds a quoted parenthesis, or fed to a shell as a here-string or through a pipe into a group is classified, and checked against the never-allowed list, as the command it runs. Before, most of these were classified by a word that names no program and came out `safe`.
+  
+  Upgrade notes:
+  
+  - Commands of these shapes that ran without a prompt now follow the policy for the command inside them. `(sudo id)` and `if true; then sudo id; fi` are `privileged`, and `{ reboot; }` is refused, exactly as `sudo id` and `reboot` are when sent on their own. Commands whose grammar holds nothing elevating or destructive keep their class: `( cd /srv && ls )`, `for f in *.log; do wc -l "$f"; done`, `{ date; uptime; } > out.txt`.
+  - A command word that the shell rewrites before running it, a glob or a brace expansion such as `./run-*.sh` or `/opt/app-{a,b}/bin/start`, is now `destructive`: the name of what runs is not in the command. Write the name out.
+  - `(( … ))` is read as commands, because `dash` runs it as a subshell. `(( $n > 5 ))` and `(( count*2 > 10 ))` are now `destructive`; `(( n > 5 ))` and `[ $((count*2)) -gt 10 ]` keep their class.
+  - A word that names an elevating or never-allowed command is read as that command wherever some shell would run it: a `case` label after the first (`case $1 in start) …;; reboot) …;; esac`), an array element (`x=(sudo reboot)`). Name the label differently, or build the array from a file.
+  - A line with a `$(…)` that holds a `case` statement (ended by `esac`, or by a `}` as zsh allows) is `destructive` at least, because shells do not agree on where such a substitution ends and nothing behind it is known to be data. The same holds for a `case` statement anywhere behind a `$(`, a backquote or a process substitution on the line (`echo "$(date)"; case "$1" in …`): whether it stands inside is what cannot be told. `v="$(case "$1" in start) echo up ;; esac)"; echo "$v"` now asks for approval. Assign from a `case` statement instead (`case "$1" in start) v=up ;; esac; echo "$v"`), which keeps its class. The text from the substitution to the line's last `)` is still read by command name with quotes ignored, so `v="$(case $1 in a) echo 1 ;; esac)"; echo "run (sudo make install) first"` is `privileged`.
+  - A line nested so deep that the classifier stops reading it (eight levels of substitutions, groups and carriers, counted along every way it reads the line) is `privileged`. This held for the class before; it now holds for the never-allowed scan too, which could stop first.
+  - A word that starts with a bracket expression is a glob to a POSIX shell, so a PowerShell cast as the first word (`[xml](Get-Content web.config)`, `[int]"5"`) is now `destructive`. A static member (`[math]::Round(1.5)`) keeps its class.
+  - A PowerShell condition or block that starts with a variable, `if ($x -gt 5) { … }` or `if (Test-Path $p) { $c = Get-Content $p }`, is now `destructive`. `if (Test-Path $p) { Remove-Item $p }` keeps its class.
+
+- [`949dc85`](https://github.com/tufantunc/ssh-mcp/commit/949dc85d9679777987918a8505a7d8bcf8a58049) Thanks [@tufantunc](https://github.com/tufantunc)! - `split --filter=COMMAND` (GNU coreutils, also installed as `gsplit`) is now read as a carrier: the command it hands to `sh -c` is classified whatever its shape, in every spelling `split` accepts — attached or detached, under any prefix from `--f` up. The command is at least `destructive`, `privileged` when the filter elevates, and the never-allowed list applies to the filter.
+  
+  Upgrade note: a `split --filter` command that ran as `safe` is now asked for approval, or refused, depending on the role and tier.
+
+### Security
+
+- Fixed [GHSA-hmrp-r5wm-5mqf](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-hmrp-r5wm-5mqf): a command inside the shell's own grammar (a subshell, a brace group, after a reserved word, behind a redirection) or behind an interpreter's options (`sh -c -- CMD`, `python3 -W ignore -c CODE`) reached class `safe`, with no never-allowed match.
+- Fixed [GHSA-gpfp-xjq7-64hv](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-gpfp-xjq7-64hv): `split --filter=COMMAND` reached class `safe` when the filter held no space, with no never-allowed match. Reported by @chrispham-cyber.
+
+## 2.26.0
+
+### Minor Changes
+
+- [#329](https://github.com/tufantunc/ssh-mcp/pull/329) [`2999711`](https://github.com/tufantunc/ssh-mcp/commit/299971186ad8b54483ce7bbf6e5b4beb278f1331) Thanks [@dved123](https://github.com/dved123)! - Add `commandOutputTruncation` so operators can keep the tail of a command's output. `[defaults] commandOutputTruncation = "head" | "tail"` (per-profile `outputTruncation`) chooses which end survives `commandMaxOutputBytes`. `"tail"` keeps the end of the output, starting at the first whole line, so a `grep` over a large log no longer returns only the oldest matches; the default `"head"` keeps today's behaviour unchanged.
+
+## 2.25.1
+
+### Patch Changes
+
+- [#326](https://github.com/tufantunc/ssh-mcp/pull/326) [`a7bfd83`](https://github.com/tufantunc/ssh-mcp/commit/a7bfd8375733007b5b0bb6a310ca8d3aa520aed6) Thanks [@tufantunc](https://github.com/tufantunc)! - `--opaUrl`, `--opaTimeoutMs`, `--opaFailClosed`, `--httpSessionTtl` and `--authFailureLimit` are now checked before the config file is loaded, as `--hostKeyMode` already is. A wrong value in one of them is reported first, instead of after whatever the loader refused, which cost a second restart. The conditions are unchanged: the HTTP flags are still read only with `--transport=http`, and `--opaTimeoutMs` only with `--opaUrl`.
+
+## 2.25.0
+
+### Minor Changes
+
+- [#324](https://github.com/tufantunc/ssh-mcp/pull/324) [`ae9e7a2`](https://github.com/tufantunc/ssh-mcp/commit/ae9e7a2fae116b45f4b545d3d431ac411ac1efdf) Thanks [@tufantunc](https://github.com/tufantunc)! - Unknown command-line flags are now refused at startup instead of being silently ignored, and a likely misspelling gets a suggestion (`Unknown flag: --allowUncheckedConfigAc (did you mean --allowUncheckedConfigAcl?)`). The refusal comes before the config file is read.
+  
+  **Upgrade note:** a launch command or wrapper script that passes a flag this server does not read — a typo, or a flag from another tool — previously started anyway and now exits with status 2 and names the flag. Remove or correct it; the accepted flags are the "CLI Flags (v2)" table in the README.
+
+### Patch Changes
+
+- [#323](https://github.com/tufantunc/ssh-mcp/pull/323) [`ce50a7e`](https://github.com/tufantunc/ssh-mcp/commit/ce50a7eefccc448543d1766af1d459b920e773e7) Thanks [@tufantunc](https://github.com/tufantunc)! - An invalid `--hostKeyMode` is now reported before the config file is read, instead of after the loader has checked (and possibly refused) it, so a typo no longer costs a second restart. The Windows config-ACL messages now name the directory the server actually reads its config from, rather than the literal `%APPDATA%\ssh-mcp`, which was wrong whenever `APPDATA` is unset.
+
+## 2.24.0
+
+### Minor Changes
+
+- [#320](https://github.com/tufantunc/ssh-mcp/pull/320) [`b6cbe29`](https://github.com/tufantunc/ssh-mcp/commit/b6cbe29605342c9f5de03bb96e74970cf4435786) Thanks [@st4inl3s5](https://github.com/st4inl3s5)! - A session can now be given its own idle timeout, per call, and `0` means "no
+  cap" for the session timeouts in the config.
+  
+  `open-session` accepts `ttlMs`. It may shorten the profile's idle timeout for
+  that session. It may lengthen it only up to a ceiling the operator already set:
+  `sessionBackgroundMaxMs` for a background session. Where that cap is `0`, the
+  ceiling is the profile's own `sessionIdleTimeoutMs`, since turning the absolute
+  cap off does not turn the idle timeout off. An interactive session has no
+  absolute cap, so its ceiling is always the profile's own `sessionIdleTimeoutMs`. A call
+  above the ceiling is refused, and the refusal names the ceiling. A call cannot
+  ask for `0`: the timeout is the operator's control, and the agent can narrow
+  what the operator allows but not widen it.
+  
+  `sessionIdleTimeoutMs` / `sessionBackgroundMaxMs` in the config file, and
+  `--sessionTtl`, now accept `0` = no cap. This is the spelling
+  `commandMaxChars` and `commandQuotaPerDay` already use.
+  
+  The comparisons behind it were bare `>`, which read a literal 0 as "expire
+  immediately" — the opposite of the request — and `parseInt(x) || default` turned
+  `--sessionTtl=0` back into the 10-minute default, because 0 is falsy, not
+  invalid.
+
+### Patch Changes
+
+- [#319](https://github.com/tufantunc/ssh-mcp/pull/319) [`62fd3bb`](https://github.com/tufantunc/ssh-mcp/commit/62fd3bb693fde1e284943d96223300335653c7d7) Thanks [@st4inl3s5](https://github.com/st4inl3s5)! - Reading a live session now counts as activity.
+  
+  `lastActivity` only moved when the channel produced a byte, so a background
+  command whose output is redirected to a file — the normal way to run a long job
+  — froze its idle clock at creation. A caller polling such a session every minute
+  was indistinguishable from one that had walked away, and the idle reaper closed
+  the session (and signalled the command) at exactly the timeout: measured at
+  10m22s and 10m56s against a real host with the default 10-minute TTL, while the
+  job was being read every 90 seconds.
+
+## 2.23.1
+
+### Patch Changes
+
+- [#311](https://github.com/tufantunc/ssh-mcp/pull/311) [`517e15b`](https://github.com/tufantunc/ssh-mcp/commit/517e15b0b76c4161d8f7c75d1208e6ea191f8ea7) Thanks [@tufantunc](https://github.com/tufantunc)! - A fatal startup message longer than 64KB now reaches stderr in full on macOS. When stderr was a pipe, which is the case under the stdio transport, the message was cut off at 65,536 bytes. The write now continues until the whole message is out, and retries a full pipe for up to two seconds before it gives up.
+
+- [#316](https://github.com/tufantunc/ssh-mcp/pull/316) [`390b982`](https://github.com/tufantunc/ssh-mcp/commit/390b982598e9d13c0d7b131b9d128ee7b4ece32c) Thanks [@tufantunc](https://github.com/tufantunc)! - A `via` (ProxyJump) profile now connects when both hops are OpenSSH and ssh2's optional native crypto binding is absent. That covers the published Docker image and installs that could not build the binding. Before, the inner handshake hung after its first encrypted packet and then failed with "SSH connection ended during handshake" ([#315](https://github.com/tufantunc/ssh-mcp/issues/315)).
+  
+  The cause is in ssh2 (mscdex/ssh2#1523). Its JavaScript chacha20-poly1305 cipher corrupts the nonce when one connection is carried inside another that also uses chacha20. Connections over a bastion now offer chacha20-poly1305 last, so any other cipher both sides support is chosen first.
+  
+  A server behind a bastion that accepts only chacha20-poly1305 is still offered it. Without the native binding it still hangs, as it did before this change. Nothing that connected before stops connecting.
+
+## 2.23.0
+
+### Minor Changes
+
+- [`d930b2f`](https://github.com/tufantunc/ssh-mcp/commit/d930b2ff58e1d05d5fa2b3812fc520e5fdb69bb9) Thanks [@tufantunc](https://github.com/tufantunc)! - `fix(policy)`: the command classifier reads option values and environment assignments that carry a command — `git -c`, `apt -o`, `scp -o`, `rsync --rsync-path=`, `tar --use-compress-program=` and `GIT_SSH_COMMAND`-style prefixes — whether the value is attached with `=`, quoted, or glued to its key. A command that relied on the previous default may now prompt for approval, or be refused outright under a profile that does not grant the class it earns.
+
+### Security
+
+- Fixed [GHSA-5m7x-xwpc-pp79](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-5m7x-xwpc-pp79): twenty spellings reached class `safe` — the one class the default ask-destructive policy never prompts on, and the one an `operator` holds on `prod` — through an option value: `git -c core.pager="sudo id"`, `apt -o Dpkg::Pre-Invoke::=`, `scp -o ProxyCommand=`, `less +"!…"`, `cpan -e`, the attached `--flag=value` spellings of `rsync --rsync-path`/`--rsh` and `tar --use-compress-program`/`--to-command`, and command-bearing environment prefixes (`GIT_SSH_COMMAND="sudo id" git fetch`, `EDITOR=… crontab -e`). Each hands `sudo …` to something that runs it, while the separated spellings of the same options already classified `privileged`. The operand scan now strips a key glued to its payload, reads a value attached with `=` under the same rule as the separated one, and — for the variable names a documented consumer execs — reads the value as the command it names; an assignment under any other name stays data. Reported by @eliteaja11-dev. Affected: `<= 2.22.2`.
+
+## 2.22.2
+
+### Patch Changes
+
+- [`c8040ff`](https://github.com/tufantunc/ssh-mcp/commit/c8040ffec63c363f61f76bb10715168cee7c91ce) Thanks [@tufantunc](https://github.com/tufantunc)! - Mask short, low-entropy credentials in plaintext configuration assignments (`name=value`, UCI `option name 'value'`) during output redaction when the field name indicates a secret.
+
+### Security
+
+- Fixed [GHSA-95pj-qcm9-m3m9](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-95pj-qcm9-m3m9): every redaction layer keyed off the value's shape — known token patterns, the entropy scan, configured literal secrets — so a short, low-entropy credential under a sensitive field name (`webhook_token=abc123`, `password="demo123"`, OpenWrt `option wifi_psk 'sample123'`) passed `redactText()` unchanged into file reads, command output, session output and audit logs. Plaintext assignments whose field name indicates a secret — the last `_`/`-` segment is `password`, `passwd`, `pass`, `passphrase`, `secret`, `token` or `psk`, or the name is a known key compound (`key`, `private_key`, `api-key`, …), covering UCI `option`/`list` lines and the dotted tails of `uci show` — are now masked, while `password_min`, `PasswordAuthentication`, `persist_key` and `smtp_sasl_password_maps` stay untouched. Reported by @jbdaddy04. Affected: `<= 2.22.1`.
+
+## 2.22.1
+
+### Patch Changes
+
+- [#299](https://github.com/tufantunc/ssh-mcp/pull/299) [`42b2214`](https://github.com/tufantunc/ssh-mcp/commit/42b221483f5997f6acb684233748d76c3bc4fc8d) Thanks [@dependabot](https://github.com/apps/dependabot)! - Update OpenTelemetry to 0.300: `@opentelemetry/sdk-node` and `@opentelemetry/exporter-trace-otlp-http` go from `^0.223.0` to `^0.300.0`, and `@opentelemetry/resources` from `^2.9.0` to `^3.0.0` — a coordinated major, since sdk-node 0.300 depends on resources 3.0.0 exactly. These are the parts of this bump that change what `npm i ssh-mcp` resolves, because a caret on a 0.x version does not reach the next minor; the tree resolves `@opentelemetry/api` to 1.10.0 (was 1.9.1). Regenerating the lockfile also carries declared ranges forward: `@modelcontextprotocol/sdk` to 1.32.2, `@napi-rs/keyring` to 2.1.2, `@types/node` to 26.6.6, and the prod tree's transitive dependencies (express 5.3.0, hono 4.13.16, `@hono/node-server` 2.1.5 — past GHSA-rmxm-3fg6-px4f) within ranges this package or its dependencies already declared. `npm audit --omit=dev` reports nothing.
+
+## 2.22.0
+
+### Minor Changes
+
+- [`a66f429`](https://github.com/tufantunc/ssh-mcp/commit/a66f4298983ea366f2b3173ec2baebdcd2864e89) Thanks [@tufantunc](https://github.com/tufantunc)! - `fix(policy)`: the command classifier reads a command word the same way whether it carries a directory part, a Windows executable suffix or a different case, and reads past the words an exec wrapper takes before the command it runs, using each wrapper's own options. Where those words can be read more than one way, the strictest reading decides. A command that relied on the previous defaults may now prompt for approval, or be refused outright under a profile that does not grant the class it earns. `command -v NAME` and `command -V NAME` are read as the lookups they are and no longer take the class of `NAME`.
+
+### Security
+
+- Fixed [GHSA-x567-334m-mr3c](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-x567-334m-mr3c): a privilege prefix or a never-allowed command placed after an exec wrapper's own operands (the lockfile of `flock`, the directory of `chroot`, the cpu mask of `taskset`, a flag value such as `strace -o FILE`), or a command word spelled with a Windows `.exe` suffix or in another case, classified `safe` — the one class the default `ask-destructive` policy never prompts on — so it ran with no approval. The classifier now reads past each wrapper's own words in one shared walk, takes the strictest reading where those words are ambiguous, and folds the directory part, the `.exe` suffix and case before every table lookup. Found internally through property testing. Affected: `<= 2.21.0`.
+
+## 2.21.0
+
+### Minor Changes
+
+- [#290](https://github.com/tufantunc/ssh-mcp/pull/290) [`769b445`](https://github.com/tufantunc/ssh-mcp/commit/769b445beb85f2a2b7b37dc58a7b55a9473befe7) Thanks [@tufantunc](https://github.com/tufantunc)! - **`config.toml` can be reloaded without a restart** ([#288](https://github.com/tufantunc/ssh-mcp/issues/288)). A new tool, `reload-config`, reports the config file's status (path, source, load time and the sha256 of its bytes, never its contents) with `action: "status"`, and re-reads and applies the file with `action: "reload"`. Sending the process `SIGHUP` does the same reload, except on Windows. A reload runs every check startup runs, including the permission and ACL check, and applies the file only if all of them pass; a refused reload changes nothing. It also refuses a changed or removed `defaults.transferRoot` (adding one is allowed) and a server started from `--host`/`--user` flags; both need a restart. Command-line flags are never reloaded. Policy changes apply to open connections from their next command; a removed profile or a changed connection field closes that connection and its sessions, and anything running through it as a bastion. Every applied reload retires the approval grants made before it; an approval answered after a reload is re-checked against the new rules, and so is a decision (an allow, or a grant reuse) that a reload landed in the middle of. A connection still being opened when a reload lands fails only if the reload closes its profile; any other is kept, with the new profile. Reloads run one at a time, and those asked for while one is waiting to start join it. Each reload is audited as one `config:reload` record: applied, refused, or (rule `config-reload-partial`) failed after the swap began. `reload-config` also answers on a server started without a config, so writing the file and reloading configures it. **Behaviour change:** outside Windows, `SIGHUP` no longer stops the server; it triggers a reload. A stdio server still exits when its client closes stdin. An HTTP server started from a terminal is no longer stopped when that terminal closes, since its hangup is now handled; stop it with `SIGTERM` or `SIGINT`, or run it under a supervisor. **Behaviour change:** a config in which two profiles share a name is now refused at startup, and by a reload; before, the server started and used the first of the two.
+
+## 2.20.2
+
+### Patch Changes
+
+- [`b2d0a0e`](https://github.com/tufantunc/ssh-mcp/commit/b2d0a0e1e085cad07648270da9a9f83b8255e219) Thanks [@tufantunc](https://github.com/tufantunc)! - `fix(policy)`: the never-allowed rules read the operation rather than one spelling of it — flag clusters in either order, separated flags and long forms, root targets that resolve to `/`, world-writable modes beyond the literal `777`, the `-t`/subcommand device formatters, the firewall policy spelling, and the same operations behind a wrapper's own operands. A mention of a forbidden phrase is no longer refused as though it were an invocation.
+
+### Security
+
+- Fixed [GHSA-5cjr-rc2p-f66f](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-5cjr-rc2p-f66f): the never-allowed rules matched one spelling of an operation, so `rm -fr /`, `rm -r -f /`, `rm --recursive --force /`, `rm -R -f /` and `mkfs -t ext4 /dev/sda1` classified `safe` — the one class the default `ask-destructive` policy never prompts on — and executed with no approval at all, while the same operation in its canonical spelling was refused outright. The rules now read the operation through the tokeniser: flag clusters in either order, separated flags and long forms, root targets that resolve to `/` (`//`, `/etc/..`), world-writable modes beyond the literal `777`, the `-t`/subcommand device formatters and their siblings, the firewall policy spelling, and the same operations behind a wrapper's own operands (`flock /tmp/lk rm -rf /`). A mention of a forbidden phrase is no longer refused as an invocation. Reported by @wildminder. Affected: `< 2.20.2`.
+
+## 2.20.1
+
+### Patch Changes
+
+- [#275](https://github.com/tufantunc/ssh-mcp/pull/275) [`d47a335`](https://github.com/tufantunc/ssh-mcp/commit/d47a335215bc493667585b54fc11c967dbc6e435) Thanks [@dependabot](https://github.com/apps/dependabot)! - Allow `@napi-rs/keyring` 2 (`^2.1.1`, was `^1.1.0`) for `auth = "keychain"` profiles. Its one breaking change is how a store failure is reported: a locked or inaccessible keychain used to read as "no entry" and now raises an error. This server already caught that error, so the outcome is the same — the lookup fails and the remaining credential sources are tried — except that the failure is now logged (`Keychain lookup failed …`) instead of passing silently.
+
+- [#274](https://github.com/tufantunc/ssh-mcp/pull/274) [`6fd0f53`](https://github.com/tufantunc/ssh-mcp/commit/6fd0f532b907d086f586687d085854980c462c6a) Thanks [@dependabot](https://github.com/apps/dependabot)! - Require `@modelcontextprotocol/sdk` `^1.32.1` (was `^1.31.0`), so an install can no longer keep an SDK affected by GHSA-46jr-4wx8-v453 (one HTTP request could exhaust server memory while it was validated). Over this server's HTTP transport that request is only accepted after the bearer token check, and the body is capped at 1 MiB, so it takes a token holder to send it. The same SDK release also fixes GHSA-rvq5-wwqv-78pq, GHSA-22jm-h49p-29qw and GHSA-6prh-2h8m-c8cw, none of which this server reaches: it checks its own bearer token rather than using the SDK's `requireBearerAuth()`, passes no `taskStore`, and uses no SDK client transport. A dependency scanner still reports all four against any install that resolves an older SDK.
+
+## 2.20.0
+
+### Minor Changes
+
+- [`dd61692`](https://github.com/tufantunc/ssh-mcp/commit/dd61692884d04d661083484a45c74d7b31bcd883) Thanks [@tufantunc](https://github.com/tufantunc)! - `fix(policy)`: the command classifier recognises additional exec carriers and privilege brokers. A command that relied on the previous default may now prompt for approval, or be refused outright under a profile that does not grant the class it earns.
+
+### Security
+
+- Fixed [GHSA-cm4c-4q74-mgmj](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-cm4c-4q74-mgmj): common exec carriers — `sqlite3` `.shell`/`.system`, `tar --checkpoint-action=exec=…`, `gdb -ex`/`--eval-command`, `expect -c`, the vi family's `-c`/`--cmd`, `make`, `ssh host cmd` — and the privilege brokers `docker run --privileged`, `docker exec -u 0`, `systemd-run --uid=0` and `nsenter -t` classified `safe`, the one class that never reaches the approval gate, so a role limited to safe commands could run any of them — root included — with no approval and no role check. Each now classifies `destructive` or `privileged`, across the flag long forms, attached and `user:group` values, subcommand synonyms, option abbreviations, detached values, wrapper prefixes and Windows `.exe`/case spellings the review round measured. Reported by @NotAFlightRisk. Affected: `<= 2.19.2`.
+
+## 2.19.2
+
+### Patch Changes
+
+- [`40315cf`](https://github.com/tufantunc/ssh-mcp/commit/40315cf46ede8bfa93e05c579d70545122d39cbd) Thanks [@tufantunc](https://github.com/tufantunc)! - `privileged-command`: harden how the sudo password reaches sudo, and always scrub the configured sudo password from command output. The wrapped command now runs with stdin at EOF; approval prompts and audit records show `exec 0</dev/null;` inside the wrapped `sudo … sh -c` string.
+
+### Security
+
+- Fixed [GHSA-9m75-x2ch-j4jr](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-9m75-x2ch-j4jr): `privileged-command` could leave the sudo password readable by the wrapped command when sudo did not prompt (e.g. NOPASSWD); the command's stdin is now /dev/null and the configured sudo password is always scrubbed from output. Reported by @shinjiyu. Affected: `<= 2.19.1`.
+
+## 2.19.1
+
+### Patch Changes
+
+- [#262](https://github.com/tufantunc/ssh-mcp/pull/262) [`7126efe`](https://github.com/tufantunc/ssh-mcp/commit/7126efea42494528aba6159534f36f2bf8acdb2f) Thanks [@tufantunc](https://github.com/tufantunc)! - A reader refused `read-only` because its command carries a shell metacharacter now says so ([#224](https://github.com/tufantunc/ssh-mcp/issues/224)). The refusal used to name only the profile ("Clear readOnly on the profile"), so `sftp-list` on a path like `/srv/backup(old)` read as a profile problem; it now names the character, and for `sftp-list` and `sftp-download` says the character is in the remote path. Nothing is refused or allowed that was not before.
+
+- [#266](https://github.com/tufantunc/ssh-mcp/pull/266) [`2446c3e`](https://github.com/tufantunc/ssh-mcp/commit/2446c3e0c727bd3b4f86375259f15043b0bcc6ea) Thanks [@dependabot](https://github.com/apps/dependabot)! - Require `@modelcontextprotocol/sdk` `^1.31.0` (was `^1.30.0`), so an install can no longer keep an SDK affected by GHSA-6qxp-vccf-f47h (the SDK's OAuth client could send credentials to an authorization server the MCP server chose). That SDK also brings `proxy-addr` 2.0.8, past GHSA-jqcg-44mw-7w3h. Neither is reachable through this server — it uses neither the SDK's OAuth client nor express's proxy trust, and its HTTP transport resolves client addresses itself — but a dependency scanner reports both against any install that still resolves the older versions.
+
+## 2.19.0
+
+### Minor Changes
+
+- [`96673d0`](https://github.com/tufantunc/ssh-mcp/commit/96673d0586b62446ff810fb73cefe56f2789e64a) Thanks [@tufantunc](https://github.com/tufantunc)! - fix(policy): harden the built-in never-allowed rules
+
+### Security
+
+- Fixed [GHSA-rrxj-hcj2-vwm6](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-rrxj-hcj2-vwm6): the never-allowed write paths (`/etc/cron`, `/etc/systemd`, any user's `authorized_keys`) are now refused for the SFTP upload tools' remote path, the target of a shell redirect, and the destinations of `tee`, `cp`, `mv`, `install` and `dd of=`, in any spelling the path readings resolve. Affected: `< 2.19.0`.
+
+## 2.18.0
+
+### Minor Changes
+
+- [#257](https://github.com/tufantunc/ssh-mcp/pull/257) [`91cf7be`](https://github.com/tufantunc/ssh-mcp/commit/91cf7be81bca5874bd23ad0a67044c1cf010f0f3) Thanks [@tufantunc](https://github.com/tufantunc)! - `[policy].denylist` patterns are now also tested against the remote path of the five SFTP tools, not only against the command string this server composes for them ([#230](https://github.com/tufantunc/ssh-mcp/issues/230)). A rule written for the path, such as `authorized_keys$`, used to miss `sftp-upload-file` and `sftp-download-file`, whose strings end with the local path, and a spelling like `/root//.ssh/` slipped past a substring rule on every tool. The path is tested three ways: as given; lexically normalized (`//` and `/./` collapsed, `..` resolved, a trailing `/` dropped, `\` read as `/`); and in a Windows reading, tested case-insensitively — on Windows the case variants, a trailing run of dots and spaces, and the `::$DATA` default-stream spelling reach the same file (measured over SFTP on Windows 11), so a rule now catches them all; drive-relative spellings are rooted at their drive and UNC roots are kept. 8.3 short names (`AUTHOR~1`) and symlinks remain unresolved residuals. OPA's input gains `resource.remotePath`, `remotePathNormalized` and `remotePathWindows` for these tools.
+  
+  **Upgrade note — minor, not patch, because a call that was allowed can now be refused.** A pattern written for commands is now also tested against SFTP paths, so `^rm` refuses an `sftp-download` of `rmlist.txt`; and path rules match case-insensitively through the Windows reading, so on a case-sensitive target a rule on `authorized_keys` now also refuses `AUTHORIZED_KEYS`. The refusal says which reading matched. Nothing is resolved on the target: relative paths stay relative and symlinks are not followed, so anchor a path rule on its trailing segments.
+
+## 2.17.0
+
+### Minor Changes
+
+- [#254](https://github.com/tufantunc/ssh-mcp/pull/254) [`0e895f7`](https://github.com/tufantunc/ssh-mcp/commit/0e895f790c5a5ffa3e402ea73ddc19e86a1412ca) Thanks [@vkazanjian-b4i](https://github.com/vkazanjian-b4i)! - HTTP transport: MCP sessions that clients abandon without a `DELETE` no longer fill the 64-session limit for good ([#253](https://github.com/tufantunc/ssh-mcp/issues/253)). A session with no request in flight and no open SSE stream expires after `--httpSessionTtl` (default 30 minutes), and at the cap a new client is admitted by evicting the least-recently-active such session — one holding its SSE stream only when nothing else is evictable, and never one with a request in flight. The eviction happens only once the new session is admitted, so an `initialize` the server goes on to refuse costs no one their session. Expiry is checked lazily, when the session is next used or a new client initializes, so there is no timer and an expired session keeps its slot until then.
+  
+  **Upgrade note — minor, not patch, because a client that used to keep its session can now lose it.** A session left idle past the TTL, or evicted at the cap, answers `404 Session not found or expired`, and the client has to re-initialize. A client that cannot do that should keep a request or its SSE stream open, or run with a larger `--httpSessionTtl`.
+
+### Patch Changes
+
+- [#243](https://github.com/tufantunc/ssh-mcp/pull/243) [`bdbb8c1`](https://github.com/tufantunc/ssh-mcp/commit/bdbb8c1a50e93b7ba6bed5b7a209d65bfed15a2a) Thanks [@dependabot](https://github.com/apps/dependabot)! - Update OpenTelemetry to 0.222: `@opentelemetry/sdk-node` and `@opentelemetry/exporter-trace-otlp-http` go from `^0.221.0` to `^0.222.0`, the only part of this bump that changes what `npm i ssh-mcp` resolves, since a caret on a 0.x version does not reach the next minor. The lockfile also moves `@modelcontextprotocol/sdk` to 1.30.1, `@opentelemetry/resources` to 2.11.0, `smol-toml` to 1.9.0 and `zod` to 4.6.5, all inside ranges this package already declared. `npm audit --omit=dev` reports nothing.
+
+- [#254](https://github.com/tufantunc/ssh-mcp/pull/254) [`0e895f7`](https://github.com/tufantunc/ssh-mcp/commit/0e895f790c5a5ffa3e402ea73ddc19e86a1412ca) Thanks [@vkazanjian-b4i](https://github.com/vkazanjian-b4i)! - HTTP transport: an MCP request that fails inside the server, such as when creating the session's server throws, now gets a `500` JSON-RPC internal error and a line on stderr, instead of no answer and an unhandled promise rejection.
+
+## 2.16.0
+
+### Minor Changes
+
+- [#251](https://github.com/tufantunc/ssh-mcp/pull/251) [`dcd51bb`](https://github.com/tufantunc/ssh-mcp/commit/dcd51bbaea0e71713287e11a24f6288a4eeeebea) Thanks [@tufantunc](https://github.com/tufantunc)! - **IPv6 clients are told apart by their /64.** The failed-auth budget (`--authFailureLimit`)
+  and the per-client request budget (`--rateLimit`) both keyed a client by its full address.
+  An IPv6 client is now keyed by its /64, usually the smallest block a subscriber is handed,
+  for a direct connection and for an address read from `X-Forwarded-For` behind a trusted
+  proxy. Any spelling of an address — upper case, leading zeros, `::` written out, a zone
+  suffix — reaches the same key.
+  
+  An IPv6 address that carries an IPv4 address is keyed as that IPv4 client: IPv4-mapped in
+  any spelling (a forwarded `::FFFF:` or `::ffff:c000:280` used to stay IPv6, or fall back to
+  the proxy's key), and the NAT64 prefix `64:ff9b::/96`. IPv4 and loopback keying is
+  unchanged, and a trusted proxy is still recognised by its exact address.
+  
+  **Minor, not patch, because a client that used to be served can now wait.** Hosts that
+  share a /64 — a home or office network, or customers a hosting provider places on one /64 —
+  now share one failed-auth budget and one request budget, the way hosts behind one IPv4 NAT
+  already did.
+
+## 2.15.0
+
+### Minor Changes
+
+- [#247](https://github.com/tufantunc/ssh-mcp/pull/247) [`1471200`](https://github.com/tufantunc/ssh-mcp/commit/1471200008c91dc076c1a6c56569b14bda69777b) Thanks [@tufantunc](https://github.com/tufantunc)! - **`--rateLimit` is now counted per client.** It was one bucket for the whole process: with
+  `--rateLimit=3`, one client was served three times and a second client was refused before
+  it had sent a single request, both on direct connections and behind a trusted proxy. Each
+  client now has its own budget, keyed exactly as the failed-auth budget is: the socket
+  address, or the rightmost `X-Forwarded-For` entry when `--trustProxy` is set and the peer
+  is the proxy. Closes [#187](https://github.com/tufantunc/ssh-mcp/issues/187).
+  
+  **Minor, not patch, because a client that used to be served can now get a 429.** The budget
+  is charged on every authenticated request, not only the MCP route: `GET /status` and an
+  authenticated request to an unknown path spend from it too, and `GET /health` still does
+  not. A monitor polling `/status`, or an MCP client and a `/status` poller sharing one
+  address, can now exceed `--rateLimit` where before `/status` was unlimited. Behind a
+  reverse proxy without `--trustProxy`, every client still shares one budget, as before; the
+  server's warning about that now names both budgets and fires with only `--rateLimit` on.
+  
+  `Retry-After` on both 429s is now the time until that client's next request will be
+  accepted, at least one second, rather than a full token interval. The request-limit 429
+  body now carries `id: null`, as the other error responses already did.
+  
+  **Fix to the failed-auth budget.** Its table of tracked clients judged itself "saturated" by
+  stored token counts, which never change for a client that stops sending. Once 1024
+  addresses had each spent a budget, every later client started with an empty budget for
+  good, so a single typo made its correct token wait, even an hour after the attack ended.
+  Saturation is now judged by tokens after refill, so the condition ends when those buckets
+  refill.
+
+## 2.14.0
+
+### Security
+
+- Fixes [GHSA-972x-g47g-3922](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-972x-g47g-3922) (high): a Windows path written with backslashes hid an interpreter from the command classifier, so the program it carried was not read.
+
+### Minor Changes
+
+- [`2f13e7c`](https://github.com/tufantunc/ssh-mcp/commit/2f13e7c9e647730ad4a229c5702928569e1e1b1b) Thanks [@tufantunc](https://github.com/tufantunc)! - Policy: command classification reads a command under both shell dialects a target host may run — POSIX and cmd.exe — and holds it to the stricter reading when they disagree, instead of assuming the POSIX one. Path stripping now accepts backslash-separated command words, and quote removal inside double quotes follows POSIX byte for byte (a backslash before an ordinary character is kept). Commands without a backslash classify exactly as before. One deliberate change within that: a name written inside quotes with backslashes keeps its bytes now and classifies as the name a shell would actually pass in argv, where before the backslashes were silently removed.
+
+## 2.13.0
+
+### Security
+
+- Fixes [GHSA-mwmj-jr2h-q546](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-mwmj-jr2h-q546) (high): a `readOnly` profile could change system state through commands on the read-only allowlist.
+
+### Minor Changes
+
+- [`54ea189`](https://github.com/tufantunc/ssh-mcp/commit/54ea1899dae0c08c6583fb2064cd7f32b062306c) Thanks [@tufantunc](https://github.com/tufantunc)! - `read-only` now requires every argument of an allowlisted reader (`cat`, `grep`, `journalctl`, `git log`, `sort`, …) to be provable as data under a grammar declared for that binary, rather than granting the class to any invocation of a listed binary name. A spelling outside a reader's grammar — an unlisted option, an abbreviation of one that is listed, a short-option cluster containing an unlisted letter, an argument carrying an unquoted shell glob (`*`, `?`, `[`), or an operand shaped like something the reader would write to rather than read — falls the whole command to `safe` instead of `read-only`.
+  
+  `read-only` is what a `readOnly` profile is confined to, what the `viewer` role holds on prod and staging (on dev the viewer holds `safe` too), and what `read-command` requires; all of these refuse `safe` except the viewer on dev. So a command that classified `read-only` — and ran — under the old, name-only rule may now be refused under the same profile, role, or tool. The refusal names the rejected word (`` `journalctl` is read-only only with the options and operands its grammar lists; `--foo` is not accepted there. ``), so the caller can see which spelling of the same command still works, instead of concluding the binary is forbidden outright.
+  
+  Spellings that fell to `safe` in the final-review hardening wave, on top of the grammar's own exclusions: an unquoted glob argument of any grammar-checked reader (`uniq /root/.ssh/id_ed25519*` — the shell expands it into operands the grammar never counted), an option-looking word after the reader's first operand on `uniq` and `ifconfig` (`uniq IN -c` — macOS reads it as the output file), `find -- …` (find keeps evaluating primaries after `--`), `git remote show …` (its operand can name a URL git will run ssh against), and Windows trailing-slash switch forms (`sort /O/`).
+  
+  No other class moves: `safe`, `destructive` and `privileged` classify exactly as they did.
+  
+  **Minor**, not patch, for the reason applied since 2.8.0: a command a `readOnly` profile or a `viewer` ran successfully yesterday can be refused today.
+
+## 2.12.0
+
+### Security
+
+- Fixes [GHSA-qmx6-47vm-3vf7](https://github.com/tufantunc/ssh-mcp/security/advisories/GHSA-qmx6-47vm-3vf7) (high): a binary the classifier did not recognise could carry an elevated command through as `safe`.
+
+### Minor Changes
+
+- [#232](https://github.com/tufantunc/ssh-mcp/pull/232) [`adc0980`](https://github.com/tufantunc/ssh-mcp/commit/adc09808ff19bdec19fcd708210ce88a4491325e) Thanks [@tufantunc](https://github.com/tufantunc)! - A command handed to a binary this classifier does not recognise could carry an elevated command through as `safe` — the one class that runs on `run-command` with no approval prompt, whatever the role or approval policy. That gap is now closed: an operand of an unrecognised binary that nothing more specific has already read is classified as a command in its own right, so an elevation it carries is found and the command classifies `privileged` like any other.
+  
+  This does mean a command that used to run silently can now prompt for approval or be refused outright under a profile that does not grant `privileged`. The one case worth knowing about ahead of time: classification looks at the *first word* of an operand, so `git commit -m "sudo fix the thing"` now classifies `privileged` and needs approval, where `git commit -m "fix the sudo thing"` still classifies as it always did. If a `run-command` you relied on starts asking for approval, check whether a commit message, comment, or similar free-text argument happens to start with `sudo`, `doas`, `pkexec`, or `su`.
+  
+  The interpreter table also gains `osascript`, `lua`, `Rscript`, `bun`, `tclsh`, `deno eval`, and `pwsh`/`powershell`, so a program handed to one of them now classifies the same way a program handed to `python3 -c` or `node -e` already did. `pwsh -EncodedCommand`'s base64 payload is decoded so what it carries is classified rather than merely counted as opaque.
+  
+  `tclsh` carries no `-c` entry: a differential fuzz run against this branch found that `tclsh -c 'exec systemctl stop nginx'` had been classifying `destructive` on the strength of a `-c` flag real `tclsh` does not have — it takes a script file or reads one from stdin, the same as every other interpreter in the table without an inline-program flag. That invocation now classifies `safe`, correctly: `tclsh` is still a recognised, unreadable interpreter, so `echo … | tclsh` (the genuine carrier, a program on stdin) still classifies `destructive`.
+  
+  One gap this does not close, so you know where the edge is: an interpreter's own
+  value-taking option can still sit between it and its program flag —
+  `bash -o pipefail -c 'shutdown -h now'`, `python3 -W ignore -c '…'` — and that payload
+  reaches the unconditional denylist scan only for the canonical `sh -c '…'` spelling. Such a
+  command still classifies `destructive`, so it is refused for any role that does not hold
+  that class and prompts for one that does; what it does not get is the never-allowed
+  treatment. This is unchanged from previous releases.
+  
+  Reported by @MartOcd1709.
+
+- [#232](https://github.com/tufantunc/ssh-mcp/pull/232) [`adc0980`](https://github.com/tufantunc/ssh-mcp/commit/adc09808ff19bdec19fcd708210ce88a4491325e) Thanks [@tufantunc](https://github.com/tufantunc)! - `sort --compress-program=<path>` no longer classifies `read-only`.
+  
+  GNU sort runs that program for every temporary file it spills, so a reader becomes a launcher. `sort` is on the read-only allowlist, so the whole command classified `read-only` — the one class a `readOnly` profile permits — and a viewer could run an arbitrary program through `read-command` while running that same program directly was refused.
+  
+  It now classifies `destructive`, through `DISQUALIFYING_ARGS`, the table that already held `find`'s `-exec` family for the same reason. Ordinary sorting is unaffected: `sort -u`, `sort -k2 -n`, `sort --reverse` and a filename that merely contains the word all stay `read-only`.
+  
+  The first version of this fix closed the four exact spellings it was written against (`-o`, `--output` and `--compress-program`, joined and separate) and left GNU sort's own option grammar open around them. Two escapes, both closed now:
+  
+  - A short-option cluster is scanned left to right, and GNU sort lets any of its own *argument-less* short flags sit ahead of `-o` without consuming it — `sort -mo out in` writes `out` exactly as `sort -o out in` does. `-m` (merge) was the one argument-less flag missing from that set.
+  - `getopt_long` resolves a `--` word by unambiguous-prefix matching, not exact spelling: `--o`, `--ou`, `--out`, `--outp` and `--outpu` all mean `--output`, and `--co` through `--compress-progra` all mean `--compress-program`. `--c` alone is excluded on purpose — it names both `--check` and `--compress-program`, so real `sort` refuses to run rather than guess.
+  
+  Every short flag and every long-option prefix is derived from `sort --help` and measured against the real binary. `sort -tofile`, `sort -t: -k2,2n`, `sort -ko`/`-So`/`-To` and `sort --c=…` are unaffected: each hands its value to a flag other than `-o`, or (for the ambiguous `--c`) never runs at all.
+
 ## 2.11.0
 
 ### Minor Changes

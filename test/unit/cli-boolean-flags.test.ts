@@ -21,22 +21,22 @@ describe('flagEnabled', () => {
 
   it('is off when absent', () => {
     expect(flagEnabled({}, 'disableApproval')).toBe(false);
-    expect(flagEnabled({ other: null }, 'disableApproval')).toBe(false);
+    expect(flagEnabled({ host: null }, 'disableApproval')).toBe(false);
   });
 
   it.each(['1', 'true', 'yes', 'on', 'anything'])('accepts =%s as on', (value) => {
-    expect(flagEnabled({ f: value }, 'f')).toBe(true);
+    expect(flagEnabled({ trustProxy: value }, 'trustProxy')).toBe(true);
   });
 
   it.each(['false', 'FALSE', '0', 'no', 'off'])('accepts =%s as off', (value) => {
     // A flag baked into a wrapper script needs a way back off without editing
     // the script.
-    expect(flagEnabled({ f: value }, 'f')).toBe(false);
+    expect(flagEnabled({ trustProxy: value }, 'trustProxy')).toBe(false);
   });
 
   it('treats an empty value as on', () => {
     // `--flag=` is a slip, not an intent to disable; on matches the bare form.
-    expect(flagEnabled({ f: '' }, 'f')).toBe(true);
+    expect(flagEnabled({ trustProxy: '' }, 'trustProxy')).toBe(true);
   });
 });
 
@@ -87,6 +87,32 @@ describe('parseFailureLimit', () => {
       // functionally absent.
       const { parseFailureLimit } = await import('../../src/cli.js');
       expect(() => parseFailureLimit(raw)).toThrow(/between 0 and/);
+    },
+  );
+});
+
+describe('parseHttpSessionTtl', () => {
+  it('accepts positive safe integer millisecond values', async () => {
+    const { parseHttpSessionTtl } = await import('../../src/cli.js');
+    expect(parseHttpSessionTtl('1800000')).toBe(1_800_000);
+    expect(parseHttpSessionTtl(' 1 ')).toBe(1);
+    expect(parseHttpSessionTtl('007')).toBe(7);
+    expect(parseHttpSessionTtl(undefined)).toBeUndefined();
+  });
+
+  it.each([null, '', '0', '-1', '+5', '1e3', '10.5', '1000garbage', 'off', 'NaN'])(
+    'refuses %j rather than falling back to the default',
+    async (raw) => {
+      const { parseHttpSessionTtl } = await import('../../src/cli.js');
+      expect(() => parseHttpSessionTtl(raw as any)).toThrow(/httpSessionTtl/);
+    },
+  );
+
+  it.each(['99999999999999999999', '9007199254740992'])(
+    'refuses unsafe integer %s',
+    async (raw) => {
+      const { parseHttpSessionTtl } = await import('../../src/cli.js');
+      expect(() => parseHttpSessionTtl(raw)).toThrow(/positive safe integer/);
     },
   );
 });

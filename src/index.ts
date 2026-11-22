@@ -2,7 +2,7 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { reportFatal, OperatorError } from './errors.js';
+import { reportFatal } from './errors.js';
 import { ConnectionRegistry } from './ssh/connection-registry.js';
 import { PolicyEngine, resolvePolicyRules } from './policy/engine.js';
 import { AuditStore } from './audit/store.js';
@@ -11,28 +11,38 @@ import { transferForbiddenDirs } from './tools/forbidden-dirs.js';
 import { initKeychain } from './config/credential-resolver.js';
 import { getConfigPath } from './config/loader.js';
 import { SERVER_VERSION } from './version.js';
+import { reapOnce } from './ssh/reaper.js';
+import { ConfigReloader, installSighupReload } from './config/reload.js';
 import {
   parseArgv,
-  buildAppConfig,
+  loadAppConfig,
+  aclOptionsFromArgv,
   checkRemovedFlags,
+  checkUnknownFlags,
   flagEnabled,
-  parseFailureLimit,
-  parseOpaUrl,
-  parseOpaTimeout,
-  resolveHostKeyMode,
+  parseStartupFlags,
 } from './cli.js';
 
 async function main() {
   const argv = parseArgv();
+  // Removed flags first: they get the message that says what replaced them.
   checkRemovedFlags(argv);
+  checkUnknownFlags(argv);
 
   if (argv.dumpToolHashes !== undefined) {
     console.log(JSON.stringify(getToolHashes(), null, 2));
     return;
   }
 
-  const config = await buildAppConfig(argv);
-  const hostKeyMode = resolveHostKeyMode(argv);
+  // Before the config load; `parseStartupFlags` says why.
+  const { hostKeyMode, opa, http } = parseStartupFlags(argv);
+
+  // The whole of it, not just `config`: the reloader needs to know where the live config
+  // came from, its hash and when it was loaded.
+  // The ACL posture, once: startup's load and every reload check the file with it.
+  const aclOptions = aclOptionsFromArgv(argv);
+  const startup = await loadAppConfig(argv, aclOptions);
+  const { config } = startup;
   const entropyScan = flagEnabled(argv, 'auditEntropyScan');
   const tamperEvident = flagEnabled(argv, 'auditTamperEvident');
 
@@ -55,19 +65,15 @@ async function main() {
   const policy = new PolicyEngine(resolvePolicyRules(config.profiles, config.policy));
   const audit = new AuditStore(undefined, entropyScan, tamperEvident);
 
-  if ('opaUrl' in argv) {
-    // Presence, not truthiness — the trap `flagEnabled` was written for. A
-    // space-separated `--opaUrl http://…` stores null, so the old guard dropped it
-    // silently, and dropped any `--opaFailClosed` the operator asked for with it.
-    policy.setOpaUrl(
-      parseOpaUrl(argv.opaUrl),
-      flagEnabled(argv, 'opaFailClosed'),
-      parseOpaTimeout(argv.opaTimeoutMs),
-    );
+  if (opa) {
+    policy.setOpaUrl(opa.url, opa.failClosed, opa.timeoutMs);
     console.error(`OPA sidecar enabled: ${argv.opaUrl}`);
-  } else if (flagEnabled(argv, 'opaFailClosed')) {
-    throw new OperatorError('--opaFailClosed does nothing without --opaUrl.');
   }
+
+  // One reloader for the process: every MCP server below (one under stdio, one per HTTP
+  // session) reloads the same registry, policy and transfer root, and the reloader
+  // serializes them.
+  const reloader = new ConfigReloader({ aclOptions, registry, policy, audit, localPath, startup });
 
   // An McpServer binds to a single transport, so HTTP needs one per session.
   const createMcpServer = (): McpServer => {
@@ -76,10 +82,7 @@ async function main() {
       { name: 'SSH MCP Server', version: SERVER_VERSION },
       { capabilities: { tools: {}, resources: {} } },
     );
-    registerTools(server, registry, policy, audit, {
-      approvalGrantTtlMs: config.defaults.approvalGrantTtlMs,
-      localPath,
-    });
+    registerTools(server, registry, policy, audit, { localPath, reloader });
     registerResources(server, registry);
     return server;
   };
@@ -93,7 +96,7 @@ async function main() {
       host: (argv.httpHost as string) || '127.0.0.1',
       bearerToken: argv.bearerToken as string | undefined,
       rateLimit: parseInt(argv.rateLimit as string) || 0,
-      authFailureLimit: parseFailureLimit(argv.authFailureLimit),
+      ...http,
       trustProxy: flagEnabled(argv, 'trustProxy'),
       trustedProxies: (argv.trustedProxies as string)?.split(',').map((h) => h.trim()).filter(Boolean),
       allowedHosts: (argv.allowedHosts as string)?.split(',').map((h) => h.trim()).filter(Boolean),
@@ -106,19 +109,8 @@ async function main() {
   }
 
   const reaperInterval = setInterval(() => {
-    // Session reaping is awaited before connection reaping, and that order is load-bearing:
-    // closing a background session now signals its command, and `reapIdleConnections` gates
-    // on `sessionCount`, which drops to zero as soon as a session is closed. Fired without
-    // awaiting, the connection was torn down microseconds after the first signal and the
-    // TERM and KILL rungs were discarded — so a command that ignores INT survived its own
-    // reaping.
-    void (async () => {
-      const conns = registry.listConnections()
-        .map((info) => registry.get(info.profile))
-        .filter((c): c is NonNullable<typeof c> => Boolean(c));
-      await Promise.all(conns.map((conn) => conn.reapExpiredSessions().catch(() => {})));
-      registry.reapIdleConnections();
-    })();
+    // Session-then-connection ordering (load-bearing) is documented in `reapOnce`.
+    void reapOnce(registry).catch((err) => console.error('reaper failed:', err));
   }, 60_000);
 
   /**
@@ -167,6 +159,9 @@ async function main() {
 
   process.on('SIGINT', cleanup);
   process.on('SIGTERM', cleanup);
+  // Before this, SIGHUP's default action killed the process without flushing the audit
+  // log. Now it reloads the config, except on Windows; see installSighupReload.
+  installSighupReload(reloader);
 }
 
 const isTestMode = process.env.SSH_MCP_TEST === '1';

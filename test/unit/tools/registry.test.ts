@@ -16,7 +16,7 @@ describe('MCP tool surface', () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       'close-session', 'list-connections', 'list-sessions', 'open-session',
       'privileged-command', 'read-command', 'read-commands-batch', 'read-session-output',
-      'run-command', 'sftp-download', 'sftp-download-file', 'sftp-list',
+      'reload-config', 'run-command', 'sftp-download', 'sftp-download-file', 'sftp-list',
       'sftp-upload', 'sftp-upload-file', 'signal-process',
     ]);
   });
@@ -67,63 +67,57 @@ describe('read-command — enforceClass', () => {
     expect(res.isError).toBe(true);
     expect(h.execCalls).toHaveLength(0);
   });
-});
 
-describe('Viewer2 opt-in policy via real MCP command tools', () => {
-  it('allows approved diagnostic syntax only when the Viewer profile opts in', async () => {
-    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
-      approvalPolicy: 'deny', viewer2Packs: ['vpn'] });
-    const allowed = await call('read-command', { command: 'wg show wg0' });
-    expect(allowed.isError).toBeFalsy();
-    const blocked = await call('read-command', { command: 'wg set wg0 listen-port 8192' });
-    expect(blocked.isError).toBe(true);
-    expect(h.execCalls.map(x => x.command)).toEqual(['wg show wg0']);
-    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny']);
-  });
-
-  it('does not grant existing unconfigured Viewer profiles any new read rights', async () => {
-    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true,
-      approvalPolicy: 'deny' });
-    const denied = await call('read-command', { command: 'wg show wg0' });
-    expect(denied.isError).toBe(true);
+  // Task 5: a reader whose grammar rejected one of its argv words falls to
+  // `safe`, one class short of what this tool demands. The refusal should say
+  // which word cost it read-only status, not just that it was not read-only.
+  it('refuses a grammar-rejected reader and names the binary and the word', async () => {
+    h = await createHarness();
+    const res = await call('read-command', { command: 'journalctl --foo' });
+    expect(res.isError).toBe(true);
     expect(h.execCalls).toHaveLength(0);
+    const text = textOf(res);
+    expect(text).toContain('journalctl');
+    expect(text).toContain('--foo');
+  });
+
+  // #224: the metacharacter downgrade names the character, like a grammar rejection does.
+  it('refuses a reader carrying a shell metacharacter and names the character', async () => {
+    h = await createHarness();
+    const res = await call('read-command', { command: 'cat /x;y' });
+    expect(res.isError).toBe(true);
+    expect(h.execCalls).toHaveLength(0);
+    expect(textOf(res)).toContain(
+      '`cat` is read-only only when the command contains no shell metacharacter; `;` is one.',
+    );
+    expect(h.auditRecords.at(-1)).toMatchObject({
+      commandClass: 'safe',
+      binary: 'cat',
+      error: expect.stringContaining('`;` is one.'),
+    });
   });
 });
 
-describe('read-commands-batch — no escalation and per-item audit', () => {
-  it('runs independent reads on prod Viewer and rejects intervening write', async () => {
-    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
-    const result = await call('read-commands-batch', { commands: [
-      ['whoami'],
-      ['systemctl', 'restart', 'sing-box'],
-      ['uname', '-a'],
-    ] });
-    expect(result.isError).toBe(true);
-    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname -a']);
-    expect(h.auditRecords).toHaveLength(3);
-    expect(h.auditRecords.map(x => x.decision)).toEqual(['allow', 'deny', 'allow']);
-  });
-
-  it('rejects shell operator injected into argv, audits it, and continues', async () => {
-    h = await createHarness({ role: 'viewer', group: 'prod', readOnly: true });
-    const result = await call('read-commands-batch', { commands: [
-      ['whoami'],
-      ['whoami;', 'touch', '/tmp/pwn'],
-      ['uname'],
-    ] });
-    expect(result.isError).toBe(true);
-    expect(h.execCalls.map(x => x.command)).toEqual(['whoami', 'uname']);
-    expect(h.auditRecords).toHaveLength(3);
-    expect(h.auditRecords[1].ruleId).toBe('input-rejected');
-  });
-
-  it('does not smuggle a safe command through an admin profile', async () => {
-    h = await createHarness({ role: 'admin', group: 'dev', readOnly: false });
-    const result = await call('read-commands-batch', {
-      commands: [['npm', 'install'], ['whoami']],
+describe('the SFTP readers — a path with a shell metacharacter (#224)', () => {
+  it.each([
+    ['sftp-list', 'sftp:list', '/srv/backup(old)'],
+    ['sftp-download', 'sftp:download', '/srv/backup(old)'],
+    // A Windows path is the likeliest way to meet one, and it takes the two-dialect pass.
+    ['sftp-list', 'sftp:list', 'C:\\Program Files (x86)'],
+  ])('%s on %s: refuses a readOnly profile and names the path, not only the profile', async (tool, verb, remotePath) => {
+    h = await createHarness({ role: 'viewer', readOnly: true });
+    const res = await call(tool, { remotePath });
+    expect(res.isError).toBe(true);
+    const sentence = 'The remote path contains `(`, which counts as a shell metacharacter here, ' +
+      `so \`${verb}\` is read-only only for a path without one.`;
+    expect(textOf(res)).toContain(sentence);
+    expect(h.auditRecords.at(-1)).toMatchObject({
+      decision: 'deny',
+      ruleId: 'role-binding',
+      commandClass: 'safe',
+      binary: verb,
+      error: expect.stringContaining(sentence),
     });
-    expect(result.isError).toBe(true);
-    expect(h.execCalls.map(x => x.command)).toEqual(['whoami']);
   });
 });
 

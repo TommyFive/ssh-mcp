@@ -2,6 +2,9 @@
 
 export type AuthMethod = 'agent' | 'key' | 'password' | 'keychain';
 export type ApprovalMode = 'auto' | 'ask-destructive' | 'ask-all' | 'deny';
+/** Which end of a command's output survives the `maxOutputBytes` cap. */
+export type OutputTruncation = 'head' | 'tail';
+
 export type ReadOnlyExtension =
   | 'openwrt-diagnostics'
   | 'tailscale-diagnostics'
@@ -33,6 +36,8 @@ export interface Profile {
   timeout: number;
   maxChars: number;
   maxOutputBytes: number;
+  /** Keep the first (`head`) or last (`tail`) `maxOutputBytes` of a command's output. */
+  outputTruncation: OutputTruncation;
   role: string;
   readOnly: boolean;
   /** Named, built-in, argument-checked read-only command packs. */
@@ -87,6 +92,7 @@ export interface Defaults {
   commandTimeoutMs: number;
   commandMaxChars: number;
   commandMaxOutputBytes: number;
+  commandOutputTruncation: OutputTruncation;
   connectionIdleReapMs: number;
   commandQuotaPerDay: number;
   /** Lifetime of a just-in-time approval grant; 0 = always prompt. */
@@ -113,7 +119,8 @@ export interface PolicyConfig {
   roleBindings?: Record<string, Record<string, CommandClass[]>>;
   /**
    * Extra deny patterns, as regex source strings. Appended to the built-in
-   * never-allowed list (FORBIDDEN_PATTERNS in classifier.ts), which always
+   * never-allowed list (FORBIDDEN_PATTERNS/FORBIDDEN_RULES in classifier.ts plus
+   * the write-path families in policy/never-allowed-writes.ts), which always
    * applies — setting this cannot switch off the canonical protections. It
    * does replace any `denylist` on the base PolicyRules, which the compiled-in
    * defaults do not set.
@@ -191,10 +198,34 @@ export interface CommandResult {
   signal?: string;
 }
 
+/**
+ * Why a reader was not credited as `read-only`. `binary` is the `READERS` key (or
+ * SFTP verb) that matched — for a two-word entry, the two-word prefix.
+ *
+ * - `grammar`: the reader's grammar refused `word`, an argv word (or, for an
+ *   operand-count/`each` violation, the offending operand; for a value flag left
+ *   with nothing to consume, the flag itself).
+ * - `shell-metacharacter`: `word` is the first character of the command that is in
+ *   `SHELL_CONTROL_CHARS`, quoted or not; with one present the allowlist cannot vouch
+ *   for the rest of the line (#224).
+ */
+export interface ReadOnlyRejection {
+  binary: string;
+  word: string;
+  cause: 'grammar' | 'shell-metacharacter';
+}
+
 export interface ParsedCommand {
   binary: string;
   fullCommand: string;
   class: CommandClass;
+  /**
+   * Set only when `class` is the outer `safe` produced by a reader being refused
+   * read-only — never when a nested or synthetic class raised the result above
+   * `safe`, and never when the command was not a reader at all. See
+   * `ReadOnlyRejection` and `classifyCommand` in `policy/classifier.ts`.
+   */
+  readOnlyRejection?: ReadOnlyRejection;
 }
 
 // ─── Policy Types ───────────────────────────────────────────────────────────
@@ -207,6 +238,8 @@ export interface PolicyEvaluation {
   binary: string;
   ruleId?: string;
   reason?: string;
+  /** Copied from the parsed command's `readOnlyRejection`; see `ParsedCommand`. */
+  readOnlyRejection?: ReadOnlyRejection;
 }
 
 // ─── Credential Types ───────────────────────────────────────────────────────

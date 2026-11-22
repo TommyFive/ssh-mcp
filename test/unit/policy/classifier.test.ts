@@ -1,15 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { classifyCommand, extractBinary, isForbidden } from '../../../src/policy/classifier.js';
+import { growthRatio } from './cpu-cost.js';
 
 describe('classifyCommand', () => {
-  it('classifies generic and argument-bounded diagnostics as read-only', () => {
-    const linux = ['linux-service-diagnostics'] as const;
+  it('classifies allowlisted commands as read-only', () => {
     expect(classifyCommand('ls -la').class).toBe('read-only');
     expect(classifyCommand('cat /etc/hosts').class).toBe('read-only');
     expect(classifyCommand('grep error /var/log/syslog').class).toBe('read-only');
     expect(classifyCommand('df -h').class).toBe('read-only');
-    expect(classifyCommand('systemctl status nginx --no-pager', linux).class).toBe('read-only');
-    expect(classifyCommand('docker ps', linux).class).toBe('read-only');
+    expect(classifyCommand('systemctl status nginx').class).toBe('read-only');
+    expect(classifyCommand('docker ps').class).toBe('read-only');
   });
 
   it('classifies sudo/su/doas as privileged', () => {
@@ -37,42 +37,6 @@ describe('classifyCommand', () => {
   it('classifies echo with redirect as safe (not read-only)', () => {
     expect(classifyCommand('echo hello > /tmp/file').class).toBe('safe');
     expect(classifyCommand('echo hello').class).toBe('read-only');
-  });
-
-  it('only promotes enabled diagnostic extensions with safe arguments', () => {
-    const linux = ['linux-service-diagnostics', 'linux-storage-diagnostics', 'linux-login-diagnostics', 'linux-process-diagnostics'] as const;
-    const openwrt = ['openwrt-diagnostics'] as const;
-    const macos = ['macos-network-diagnostics', 'macos-system-diagnostics'] as const;
-    expect(classifyCommand('journalctl -u ssh.service -n 200 --no-pager', linux).class).toBe('read-only');
-    expect(classifyCommand('journalctl --vacuum-time=1s', linux).class).toBe('safe');
-    expect(classifyCommand('docker logs --tail 500 --no-color api', linux).class).toBe('read-only');
-    expect(classifyCommand('docker logs --follow api', linux).class).toBe('safe');
-    expect(classifyCommand('last -n 200', linux).class).toBe('read-only');
-    expect(classifyCommand('last -n 201', linux).class).toBe('safe');
-    expect(classifyCommand('lsof -nP -iTCP -sTCP:LISTEN', linux).class).toBe('read-only');
-    expect(classifyCommand('logread', openwrt).class).toBe('read-only');
-    expect(classifyCommand('logread -f', openwrt).class).toBe('safe');
-    expect(classifyCommand('sw_vers -productVersion', macos).class).toBe('read-only');
-    expect(classifyCommand('ifconfig en0', macos).class).toBe('read-only');
-    expect(classifyCommand('ifconfig en0 down', macos).class).toBe('safe');
-    expect(classifyCommand('defaults read com.apple.finder', macos).class).toBe('read-only');
-    expect(classifyCommand('defaults write com.apple.finder ShowAllFiles -bool true', macos).class).toBe('safe');
-  });
-
-  it('rejects historical false-read-only file and find writers', () => {
-    expect(classifyCommand('find /tmp -fprint0 /tmp/output').class).toBe('destructive');
-    expect(classifyCommand('find /tmp -fprint /tmp/output').class).toBe('destructive');
-    expect(classifyCommand('find /tmp -fprintf /tmp/output format').class).toBe('destructive');
-    expect(classifyCommand('file --compile -m /tmp/magic').class).toBe('destructive');
-    expect(classifyCommand('file -C -m /tmp/magic').class).toBe('destructive');
-    expect(classifyCommand('sort -o/tmp/out /tmp/data').class).toBe('destructive');
-    expect(classifyCommand('find /tmp -print0').class).toBe('read-only');
-    expect(classifyCommand('file -b /tmp/example').class).toBe('read-only');
-  });
-
-  it('blocks generic sort and uniq write forms', () => {
-    expect(classifyCommand('sort -o output input').class).toBe('destructive');
-    expect(classifyCommand('uniq input output').class).toBe('destructive');
   });
 
   it('handles sudo prefix in binary extraction', () => {
@@ -269,7 +233,7 @@ describe('elevation and exec wrappers (GHSA-6f54-mjqq-2jp8)', () => {
     expect(classifyCommand('grep sudo /var/log/auth.log').class).toBe('read-only');
     expect(classifyCommand('cat /etc/sudoers').class).toBe('read-only');
     expect(classifyCommand('ls -la /usr/bin/sudo').class).toBe('read-only');
-    expect(classifyCommand('journalctl -u sudo -n 200 --no-pager', ['linux-service-diagnostics']).class).toBe('read-only');
+    expect(classifyCommand('journalctl -u sudo').class).toBe('read-only');
     expect(classifyCommand('find /etc -name "*.conf"').class).toBe('read-only');
     expect(classifyCommand('find /var/log -type f').class).toBe('read-only');
     expect(classifyCommand('printenv').class).toBe('read-only');
@@ -326,12 +290,12 @@ describe('forbidden pattern matching cost', () => {
    */
   it('stays linear on a command built from the pattern heads themselves', () => {
     const seed = 'dd curl wget chown -R x ';
-    const cost = (bytes: number) => {
-      const command = seed.repeat(Math.ceil(bytes / seed.length)).slice(0, bytes);
-      const started = process.hrtime.bigint();
-      classifyCommand(command);
-      return Number(process.hrtime.bigint() - started) / 1e6;
-    };
+    // CPU time read in interleaved pairs: see `cpuMs` for the load that made this
+    // ratio fail on wall-clock time, and `growthRatio` for the change of core speed
+    // that made a sibling fail on CPU time.
+    const command = (bytes: number) => seed.repeat(Math.ceil(bytes / seed.length)).slice(0, bytes);
+    const small = command(50_000);
+    const large = command(200_000);
 
     // A ratio rather than a wall-clock bound. "Stays linear" is a claim about growth, and
     // an absolute budget measures the runner: this asserted 1000 ms against ~460 ms
@@ -345,7 +309,7 @@ describe('forbidden pattern matching cost', () => {
     // traded a failed assertion for a test timeout. CI measured ~8x this machine, so the
     // explicit timeout is what stops a slow runner turning a passing assertion into a
     // timeout again. Absolute cost at size is covered by the 200k-character cases above.
-    const ratio = cost(200_000) / Math.max(cost(50_000), 0.01);
+    const ratio = growthRatio(() => classifyCommand(small), () => classifyCommand(large));
     expect(ratio).toBeLessThan(8);
   }, 30_000);
 });

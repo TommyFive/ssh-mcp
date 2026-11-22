@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Operator-only out-of-band, 30-minute, EXACT-FILE SFTP grant.
- * Run in an independent interactive Mac mini terminal, never through SSH-MCP.
+ * Run in an independent operator-controlled terminal, never through SSH-MCP.
  * A separate file is used so the rollback-compatible config.toml stays intact.
  */
 import { createInterface } from 'node:readline/promises';

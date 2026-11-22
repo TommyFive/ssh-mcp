@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { isViewer2ReadOnly, isSafeProbeTarget } from '../../../src/policy/viewer2.js';
 
-describe('Viewer2 staged matcher (not yet activated)', () => {
+describe('Viewer2 opt-in diagnostic matcher', () => {
   const positive: [string, readonly ('linux' | 'network' | 'vpn' | 'openwrt' | 'macos' | 'icmp')[]][] = [
     ['wg show wg0', ['vpn']],
     ['wg show wg0 endpoints', ['vpn']],

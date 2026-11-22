@@ -55,17 +55,11 @@ export function registerFileTools(
     { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
     async ({ remotePath, content, profile }, extra) => {
       return runAudited(
-        // Verb, then what the operation does, then the path it does it to — and the
-        // path LAST on purpose. The engine matches `[policy].denylist` against this
-        // whole string, so an operator rule anchored on the path (`authorized_keys$`,
-        // the natural and portable way to write "nothing may write here") keeps
-        // working only while the path ends the line. Measured: with the suffixes
-        // appended after the path instead, that rule silently stops matching and the
-        // refusal degrades to a prompt with no warning. A whole-string rule
-        // (`^sftp:upload /root.*$`) breaks either way — it is coupled to a format
-        // that is ours to change — so the layout is chosen for the form that is not.
-        // `sftp:list` and `sftp:download` carry no flags, so they already read this
-        // way and need no change.
+        // Verb, then what the operation does, then the path it does it to. The path
+        // ends the line so the string reads naturally in a prompt and an audit record;
+        // `[policy].denylist` no longer depends on that, since every SFTP tool hands
+        // its remote path to the engine on its own (#230). A rule anchored on the whole
+        // string (`^sftp:upload /root.*$`) is still coupled to this layout.
         `sftp:upload${OVERWRITE_FLAG}${payloadSuffix(content)} ${remotePathForAudit(remotePath)}`,
         {
           toolName: 'sftp-upload',
@@ -73,16 +67,11 @@ export function registerFileTools(
           profile,
           extra,
           synthetic: true,
+          resource: { remotePath, remoteWrite: true },
           preCheck: () => { sanitizeRemotePath(remotePath); },
         },
         async (rt) => {
           const client = new SftpClient(rt.conn);
-          // A permanent operator-scoped workspace rule is a server-side
-          // authorization policy, not proof of the ChatGPT UI decision.
-          // Unlike the legacy inline upload (direct truncation), scoped
-          // uploads stage into a private .part file, reject path symlinks and
-          // publish with a guarded SFTP rename. Ordinary explicit approvals
-          // and out-of-band exact-file grants keep their existing semantics.
           const scopedRoot = approvedSftpWorkspaceRoot(rt.command, rt.conn.profile);
           if (scopedRoot) {
             await client.uploadFile(Readable.from([Buffer.from(content, 'utf8')]), remotePath, {
@@ -124,6 +113,7 @@ export function registerFileTools(
           profile,
           extra,
           synthetic: true,
+          resource: { remotePath },
           preCheck: () => { sanitizeRemotePath(remotePath); },
         },
         async (rt) => {

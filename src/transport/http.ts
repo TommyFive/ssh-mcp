@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type ServerResponse } from 'http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { randomUUID, timingSafeEqual } from 'crypto';
 import { isIP } from 'net';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -11,6 +11,11 @@ import { OperatorError } from '../errors.js';
 const MAX_BODY_SIZE = 1_048_576; // 1MB
 /** Cap on concurrent MCP sessions, so unauthenticated-adjacent churn can't grow the map without bound. */
 const MAX_SESSIONS = 64;
+/**
+ * How long an MCP session may receive no requests before it is reclaimed. Cleanup is lazy,
+ * so an idle server costs nothing and there is no interval to clean up.
+ */
+export const DEFAULT_SESSION_IDLE_TTL_MS = 30 * 60_000;
 
 /** How many failed auth attempts one client may make per minute. 0 disables the check. */
 export const DEFAULT_AUTH_FAILURE_LIMIT = 10;
@@ -25,6 +30,59 @@ interface Bucket {
   lastRefill: number;
 }
 
+/** Whole tokens earned since `lastRefill`. Negative when the clock stepped back; callers clamp. */
+function tokensEarned(bucket: Bucket, maxTokens: number): number {
+  return Math.floor(((Date.now() - bucket.lastRefill) / REFILL_INTERVAL_MS) * maxTokens);
+}
+
+/** Tokens the bucket would hold if refilled now, without changing it. */
+function availableTokens(bucket: Bucket, maxTokens: number): number {
+  return Math.min(maxTokens, bucket.tokens + Math.max(tokensEarned(bucket, maxTokens), 0));
+}
+
+/**
+ * How long until this bucket earns its next token, for `Retry-After`.
+ *
+ * Exact, where it used to be the fixed `REFILL_INTERVAL_MS / maxTokens`. That is how long
+ * one token takes, so a client refused halfway through the interval was told to wait
+ * twice as long as it had to. Bounded on both sides: below at a second, because
+ * `Retry-After` is whole seconds and `0` reads as "retry now"; above at one token's
+ * interval, because a clock that stepped backwards puts `lastRefill` in the future, and
+ * the raw difference would then advertise an arbitrarily long wait. Rounded up to whole
+ * milliseconds: a limit that does not divide a minute gives a fractional interval, and
+ * rounding down would name a moment at which the token has not yet arrived.
+ */
+function nextTokenWaitMs(bucket: Bucket, maxTokens: number): number {
+  const interval = REFILL_INTERVAL_MS / maxTokens;
+  return Math.max(1000, Math.ceil(Math.min(interval, bucket.lastRefill + interval - Date.now())));
+}
+
+/**
+ * The tracked key whose bucket holds the most tokens *after refill*: the entry with the
+ * least worth remembering, so the one to evict.
+ *
+ * Refilled, not stored. A key that stops sending keeps its stored count forever, so
+ * ranking by `tokens` treated a bucket spent an hour ago as still spent. A table that
+ * was saturated once was then judged saturated for good, which was measured.
+ *
+ * Linear in the table, and left that way: it runs only when a new key arrives at a full
+ * table, and stops early at the first full bucket. The worst case, every bucket partly
+ * spent, measured about 46µs per new key at 1024 entries (Apple M4 Max, Node 24), and
+ * the same for both limiters.
+ */
+function fullestBucket(
+  buckets: Map<string, Bucket>,
+  maxTokens: number,
+): { key: string; available: number } | undefined {
+  let fullest: { key: string; available: number } | undefined;
+  for (const [key, bucket] of buckets) {
+    const available = availableTokens(bucket, maxTokens);
+    if (fullest === undefined || available > fullest.available) fullest = { key, available };
+    if (available === maxTokens) break;
+  }
+  return fullest;
+}
+
 /**
  * One token-bucket step, shared by the two limiters so the refill arithmetic exists once.
  *
@@ -32,8 +90,7 @@ interface Bucket {
  * idle server costs nothing and there is no interval to clean up.
  */
 function consume(bucket: Bucket, maxTokens: number): { allowed: boolean; retryAfterMs: number } {
-  const elapsed = Date.now() - bucket.lastRefill;
-  const refilled = Math.floor((elapsed / REFILL_INTERVAL_MS) * maxTokens);
+  const refilled = tokensEarned(bucket, maxTokens);
   if (refilled > 0) {
     bucket.tokens = Math.min(maxTokens, bucket.tokens + refilled);
     bucket.lastRefill += Math.round((refilled / maxTokens) * REFILL_INTERVAL_MS);
@@ -44,18 +101,40 @@ function consume(bucket: Bucket, maxTokens: number): { allowed: boolean; retryAf
     return { allowed: true, retryAfterMs: 0 };
   }
 
-  return { allowed: false, retryAfterMs: Math.ceil(REFILL_INTERVAL_MS / maxTokens) };
+  return { allowed: false, retryAfterMs: nextTokenWaitMs(bucket, maxTokens) };
 }
 
-class RateLimiter {
-  private bucket: Bucket;
+/**
+ * A request bucket per client, so `--rateLimit` means N requests per minute *per caller*.
+ *
+ * It was one bucket for the process: one client spent `--rateLimit` for every other, and
+ * a client that had sent nothing was refused (#187, measured). Keyed by `clientKey()`,
+ * the same key the failure budget uses, and charged only after the token check passes,
+ * so unauthenticated traffic cannot create entries or drain anyone's budget.
+ *
+ * Bounded like `AuthFailureLimiter`, and it evicts the fullest bucket for the same reason.
+ * Where it differs: an arriving key always starts full, even when every tracked bucket is
+ * spent. Saturating this table takes 1024 addresses that hold the token, and a token
+ * holder with that many addresses already has that many budgets. The refund opens nothing
+ * new, while starting empty would refuse a legitimate client's first request because of
+ * other clients' traffic.
+ */
+export class ClientRateLimiter {
+  private buckets = new Map<string, Bucket>();
 
-  constructor(private maxTokens: number) {
-    this.bucket = { tokens: maxTokens, lastRefill: Date.now() };
-  }
+  constructor(private maxTokens: number) {}
 
-  tryConsume(): { allowed: boolean; retryAfterMs: number } {
-    return consume(this.bucket, this.maxTokens);
+  tryConsume(key: string): { allowed: boolean; retryAfterMs: number } {
+    let bucket = this.buckets.get(key);
+    if (bucket === undefined) {
+      if (this.buckets.size >= MAX_TRACKED_CLIENTS) {
+        const fullest = fullestBucket(this.buckets, this.maxTokens);
+        if (fullest !== undefined) this.buckets.delete(fullest.key);
+      }
+      bucket = { tokens: this.maxTokens, lastRefill: Date.now() };
+      this.buckets.set(key, bucket);
+    }
+    return consume(bucket, this.maxTokens);
   }
 }
 
@@ -66,8 +145,8 @@ class RateLimiter {
  * limiter was reached, so a wrong bearer token consumed nothing and guessing ran at network
  * speed with no backoff — measured as twelve 401s and zero 429s against `--rateLimit=3`.
  * Moving the request limiter above the auth check would have closed that and opened
- * something worse: the request bucket is global, so unauthenticated traffic could then
- * starve every legitimate client.
+ * something worse: its 429 would answer a guess without evaluating it, and unauthenticated
+ * traffic reaching a request bucket could spend a victim's budget under a spoofable key.
  *
  * Only failures consume a token, so a working client never builds a budget up and is never
  * throttled by its own traffic — which is what makes this safe to have on by default. It
@@ -85,11 +164,8 @@ export class AuthFailureLimiter {
   peek(key: string): { allowed: boolean; retryAfterMs: number } {
     const bucket = this.buckets.get(key);
     if (bucket === undefined) return { allowed: true, retryAfterMs: 0 };
-    const elapsed = Date.now() - bucket.lastRefill;
-    const refilled = Math.floor((elapsed / REFILL_INTERVAL_MS) * this.maxTokens);
-    const available = Math.min(this.maxTokens, bucket.tokens + Math.max(refilled, 0));
-    if (available > 0) return { allowed: true, retryAfterMs: 0 };
-    return { allowed: false, retryAfterMs: Math.ceil(REFILL_INTERVAL_MS / this.maxTokens) };
+    if (availableTokens(bucket, this.maxTokens) > 0) return { allowed: true, retryAfterMs: 0 };
+    return { allowed: false, retryAfterMs: nextTokenWaitMs(bucket, this.maxTokens) };
   }
 
   /** Charge this client for a failed attempt. */
@@ -103,12 +179,8 @@ export class AuthFailureLimiter {
         // first and then handed its key a fresh budget: minting enough keys cleared a
         // lockout, which was measured end to end. A full bucket is the one with nothing
         // worth remembering.
-        let fullestKey: string | null = null;
-        let fullest = -1;
-        for (const [k, b] of this.buckets) {
-          if (b.tokens > fullest) { fullest = b.tokens; fullestKey = k; }
-        }
-        if (fullestKey !== null) this.buckets.delete(fullestKey);
+        const fullest = fullestBucket(this.buckets, this.maxTokens);
+        if (fullest !== undefined) this.buckets.delete(fullest.key);
         // Every tracked client is spent, so the table itself is the signal and a new key
         // does not get a full budget.
         //
@@ -119,8 +191,9 @@ export class AuthFailureLimiter {
         // `peek` already allows a key it has never seen, so the first attempt is free
         // either way and the second is refused either way. Measured both, identical.
         // Giving an arriving key a real budget is the refund this rule exists to stop.
-        // Saturation needs 1024 addresses that have each spent a full budget.
-        if (fullest <= 0) bucket = { tokens: 0, lastRefill: Date.now() };
+        // Saturation needs 1024 addresses that have each spent a full budget *recently*:
+        // `fullestBucket` ranks by refilled tokens, so the condition ends once they refill.
+        if (fullest === undefined || fullest.available <= 0) bucket = { tokens: 0, lastRefill: Date.now() };
       }
       this.buckets.set(key, bucket);
     }
@@ -129,7 +202,22 @@ export class AuthFailureLimiter {
 }
 
 /**
- * Which client an attempt is charged to.
+ * Which client an attempt is charged to: the address `chargedAddress` settles on, grouped
+ * into a key by `keyOf`. Grouped here, once, so no path through the header logic can hand
+ * back an ungrouped address — and trust is decided in there, on the exact peer, before any
+ * grouping happens.
+ */
+export function clientKey(
+  req: IncomingMessage,
+  trustProxy: boolean,
+  trustedProxies?: string[],
+): { key: string; forwardedIgnored: boolean } {
+  const { address, forwardedIgnored } = chargedAddress(req, trustProxy, trustedProxies);
+  return { key: keyOf(address), forwardedIgnored };
+}
+
+/**
+ * The exact address an attempt is charged to.
  *
  * The socket's remote address, which is the real client on a direct connection — how this
  * server is normally run. `X-Forwarded-For` is read only when a proxy is explicitly
@@ -147,14 +235,14 @@ export class AuthFailureLimiter {
  * chain of two would need the second-from-right, and this does not try to guess the depth.
  * Anything that is not an IP address is discarded rather than used as a map key.
  */
-export function clientKey(
+function chargedAddress(
   req: IncomingMessage,
   trustProxy: boolean,
   trustedProxies?: string[],
-): { key: string; forwardedIgnored: boolean } {
+): { address: string; forwardedIgnored: boolean } {
   const peer = canonicalAddress(req.socket.remoteAddress ?? 'unknown');
   const forwarded = req.headers['x-forwarded-for'];
-  if (!trustProxy || forwarded === undefined) return { key: peer, forwardedIgnored: false };
+  if (!trustProxy || forwarded === undefined) return { address: peer, forwardedIgnored: false };
 
   // The rightmost entry is proxy-authored only if a proxy actually appended one. Nothing
   // about the header says whether it did, so the *peer* has to be the proxy — otherwise a
@@ -162,15 +250,62 @@ export function clientKey(
   // rightmost, and it picks its own key. Both attacks this keying was fixed to stop came
   // back alive in exactly that configuration.
   if (!isTrustedPeer(peer, trustedProxies)) {
-    return { key: peer, forwardedIgnored: true };
+    return { address: peer, forwardedIgnored: true };
   }
 
   const raw = Array.isArray(forwarded) ? forwarded.join(',') : forwarded;
   const entries = raw.split(',').map((e) => e.trim()).filter(Boolean);
   const nearest = entries[entries.length - 1];
   const address = nearest === undefined ? undefined : forwardedAddress(nearest);
-  if (address === undefined) return { key: peer, forwardedIgnored: true };
-  return { key: address, forwardedIgnored: false };
+  if (address === undefined) return { address: peer, forwardedIgnored: true };
+  return { address, forwardedIgnored: false };
+}
+
+/**
+ * The key an address is charged to: an IPv4 address as itself, an IPv6 address by its /64.
+ *
+ * A subscriber is usually handed at least a /64, so the /64 is the client. Where a provider
+ * puts several customers on one /64 they share a budget, as hosts behind one IPv4 NAT do.
+ *
+ * Three IPv6 ranges are not a client's own /64 but a way of carrying an IPv4 address, and
+ * are keyed by that address: IPv4-mapped `::ffff:0:0/96` in any spelling, the NAT64
+ * well-known prefix `64:ff9b::/96` under which a translated deployment sees every IPv4
+ * client, and IPv4-compatible `::/96`. Grouped by /64 instead, each of them would put every
+ * IPv4 client on one key. A translator using a prefix of its own is not recognised, and its
+ * IPv4 clients share that prefix's /64. Loopback stays `::1`, however it is written.
+ */
+function keyOf(address: string): string {
+  if (isIP(address) !== 6) return address;
+  const g = ipv6Groups(address);
+  if (g.slice(0, 7).every((n) => n === 0) && g[7] === 1) return '::1';
+  const lowZero = g[2] === 0 && g[3] === 0 && g[4] === 0;
+  const carriesIpv4 = lowZero && (
+    (g[0] === 0 && g[1] === 0 && (g[5] === 0 || g[5] === 0xffff)) ||
+    (g[0] === 0x64 && g[1] === 0xff9b && g[5] === 0)
+  );
+  if (carriesIpv4) return `${g[6] >> 8}.${g[6] & 0xff}.${g[7] >> 8}.${g[7] & 0xff}`;
+  return `${g.slice(0, 4).map((n) => n.toString(16)).join(':')}::/64`;
+}
+
+/**
+ * An IPv6 address as its eight 16-bit groups, whatever the spelling: zone dropped, `::`
+ * expanded, a dotted IPv4 tail read as the last two groups, case and leading zeros gone by
+ * reading each group as a number. Expects an address `net.isIP` has already accepted.
+ */
+function ipv6Groups(address: string): number[] {
+  const [head, tail] = address.split('%')[0].split('::');
+  const parse = (part: string | undefined): number[] =>
+    part === undefined || part === ''
+      ? []
+      : part.split(':').flatMap((group) => {
+        if (!group.includes('.')) return [parseInt(group, 16)];
+        const [a, b, c, d] = group.split('.').map(Number);
+        return [(a << 8) | b, (c << 8) | d];
+      });
+  const headGroups = parse(head);
+  const tailGroups = parse(tail);
+  if (tail === undefined) return headGroups;
+  return [...headGroups, ...Array(8 - headGroups.length - tailGroups.length).fill(0), ...tailGroups];
 }
 
 /**
@@ -208,9 +343,17 @@ function forwardedAddress(entry: string): string | undefined {
   return isIP(candidate) === 0 ? undefined : candidate;
 }
 
-/** `::ffff:127.0.0.1` and `127.0.0.1` are the same client; key them the same way. */
+/**
+ * `::ffff:127.0.0.1` and `127.0.0.1` are the same client; key them the same way.
+ *
+ * Only that spelling, and only when what follows is IPv4: `::ffff:c000:280` stripped to
+ * `c000:280` was no address at all, and the request fell back to the proxy's key. Every
+ * other spelling of a mapped address reaches its IPv4 key through `keyOf`, by value. The
+ * case is left as it came, because this is also the peer the trust check compares with
+ * `--trustedProxies` — a zone such as `%WAN` must still match as written.
+ */
 function canonicalAddress(address: string): string {
-  return address.startsWith('::ffff:') ? address.slice(7) : address;
+  return address.startsWith('::ffff:') && isIP(address.slice(7)) === 4 ? address.slice(7) : address;
 }
 
 export interface HttpTransportOpts {
@@ -218,6 +361,13 @@ export interface HttpTransportOpts {
   host?: string;
   bearerToken?: string;
   registry: ConnectionRegistry;
+  /** MCP session idle timeout. Defaults to `DEFAULT_SESSION_IDLE_TTL_MS`. */
+  sessionIdleTtlMs?: number;
+  /**
+   * Authenticated requests allowed per client per minute, on every route but
+   * `GET /health`. 0 or unset disables the limit. Clients are keyed as for
+   * `authFailureLimit`.
+   */
   rateLimit?: number;
   /**
    * Failed bearer-auth attempts allowed per client per minute. Defaults to
@@ -257,7 +407,7 @@ function jsonRpcError(res: ServerResponse, status: number, code: number, message
 export async function startHttpServer(
   createMcpServer: () => McpServer | Promise<McpServer>,
   opts: HttpTransportOpts,
-): Promise<void> {
+): Promise<Server> {
   const { port, host = '127.0.0.1', bearerToken, registry } = opts;
 
   if (!bearerToken) {
@@ -273,25 +423,27 @@ export async function startHttpServer(
     : null;
 
   // Said once, when it turns out to matter. Behind a proxy with `--trustProxy` off, every
-  // client is keyed on the proxy's socket address and so shares one budget — which means
-  // ten failures from anyone locks out everyone. The README tells operators to terminate
-  // TLS at a proxy, so this is the configuration it recommends, and the collapse is
-  // invisible until a legitimate client is refused.
+  // client is keyed on the proxy's socket address and so shares one failure budget and one
+  // request budget — ten failures from anyone locks out everyone, and one busy client
+  // starves the rest. The README tells operators to terminate TLS at a proxy, so this is
+  // the configuration it recommends, and the collapse is invisible until a legitimate
+  // client is refused.
   let warnedSharedBudget = false;
   const warnSharedBudget = () => {
     if (warnedSharedBudget) return;
     warnedSharedBudget = true;
     console.error(
       'POLICY WARNING: X-Forwarded-For is present but not being used to tell clients ' +
-      'apart, so every client shares one failed-auth budget and one failing client can ' +
-      'lock out the rest. Either --trustProxy is off, or the peer is not a trusted proxy ' +
-      '(bare --trustProxy trusts a loopback peer; name others with --trustedProxies), or ' +
-      'the rightmost entry is not an address this server can read.',
+      'apart, so every client is charged to one key: one failed-auth budget and one ' +
+      'request budget between them, for whichever of the two is on, and one client can ' +
+      'lock out or starve the rest. Either --trustProxy is off, or the peer is not a ' +
+      'trusted proxy (bare --trustProxy trusts a loopback peer; name others with ' +
+      '--trustedProxies), or the rightmost entry is not an address this server can read.',
     );
   };
 
   const rateLimiter = opts.rateLimit && opts.rateLimit > 0
-    ? new RateLimiter(opts.rateLimit)
+    ? new ClientRateLimiter(opts.rateLimit)
     : null;
 
   // DNS rebinding: a page the user visits can make their browser POST to a
@@ -302,19 +454,204 @@ export async function startHttpServer(
     ? opts.allowedHosts
     : [`${host}:${port}`, `localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`];
 
-  const transports = new Map<string, StreamableHTTPServerTransport>();
+  interface Session {
+    id?: string;
+    transport: StreamableHTTPServerTransport;
+    server: McpServer;
+    lastActivity: number;
+    finiteInFlight: number;
+    openSseStreams: number;
+    closing: boolean;
+    pending: boolean;
+    releasePending: () => void;
+    /** Drops the eviction this session's own initialize claimed, if it has not been admitted. */
+    releaseEvictionClaim: () => void;
+    closePromise?: Promise<void>;
+  }
+
+  interface PendingSessionReservation {
+    createdAt: number;
+    released: boolean;
+  }
+
+  interface McpSessionStats {
+    cap: number;
+    total: number;
+    pending: number;
+    finiteInFlightSessions: number;
+    finiteInFlightRequests: number;
+    openSseStreams: number;
+    evictable: number;
+    oldestActivityMs: number;
+    oldestPendingMs: number;
+  }
+
+  type SessionCloseReason = 'delete' | 'ttl' | 'lru' | 'init-abort' | 'transport-close';
+
+  const sessionIdleTtlMs = opts.sessionIdleTtlMs && opts.sessionIdleTtlMs > 0
+    ? opts.sessionIdleTtlMs
+    : DEFAULT_SESSION_IDLE_TTL_MS;
+  const sessions = new Map<string, Session>();
+  const pendingReservations = new Set<PendingSessionReservation>();
+  /**
+   * Eviction candidates set aside for initializes at the cap that are not admitted yet,
+   * so concurrent ones each count on a different session and the 503 comes when none
+   * is left. A claim evicts no one: room is made only once an initialize is admitted,
+   * so one the SDK goes on to refuse (bad Host, wrong Accept) or whose client
+   * disconnects costs no other client its session.
+   */
+  const evictionClaims = new Set<Session>();
+
+  function reservePendingSession(): () => void {
+    const reservation = { createdAt: Date.now(), released: false };
+    pendingReservations.add(reservation);
+    return () => {
+      if (reservation.released) return;
+      reservation.released = true;
+      pendingReservations.delete(reservation);
+    };
+  }
+
+  function sessionStats(now = Date.now()): McpSessionStats {
+    let finiteInFlightSessions = 0;
+    let finiteInFlightRequests = 0;
+    let openSseStreams = 0;
+    let evictable = 0;
+    let oldestActivity = now;
+    let oldestPending = now;
+
+    for (const session of sessions.values()) {
+      if (session.finiteInFlight > 0) finiteInFlightSessions++;
+      else if (!evictionClaims.has(session)) evictable++;
+      finiteInFlightRequests += session.finiteInFlight;
+      openSseStreams += session.openSseStreams;
+      oldestActivity = Math.min(oldestActivity, session.lastActivity);
+    }
+    for (const reservation of pendingReservations) {
+      oldestPending = Math.min(oldestPending, reservation.createdAt);
+    }
+
+    return {
+      cap: MAX_SESSIONS,
+      total: sessions.size,
+      pending: pendingReservations.size,
+      finiteInFlightSessions,
+      finiteInFlightRequests,
+      openSseStreams,
+      evictable,
+      oldestActivityMs: sessions.size > 0 ? Math.max(0, now - oldestActivity) : 0,
+      oldestPendingMs: pendingReservations.size > 0 ? Math.max(0, now - oldestPending) : 0,
+    };
+  }
+
+  function formatSessionStats(stats: McpSessionStats): string {
+    return Object.entries(stats).map(([key, value]) => `${key}=${value}`).join(' ');
+  }
+
+  function detachSession(session: Session, reason: SessionCloseReason): void {
+    if (session.closing) return;
+    session.closing = true;
+    if (session.id && sessions.get(session.id) === session) sessions.delete(session.id);
+    // Gone for another reason before its claimant was admitted: the slot is free.
+    evictionClaims.delete(session);
+    session.pending = false;
+    session.releasePending();
+    session.releaseEvictionClaim();
+    console.error(`MCP session closed reason=${reason}`);
+  }
+
+  /** Close both owners so transport streams and resources attached to the McpServer are released. */
+  function closeSession(session: Session, reason: SessionCloseReason): Promise<void> {
+    if (!session.closePromise) {
+      detachSession(session, reason);
+      session.closePromise = (async () => {
+        await session.transport.close().catch(() => {});
+        await session.server.close().catch(() => {});
+      })();
+    }
+    return session.closePromise;
+  }
+
+  /**
+   * Idle means nothing of the client's is open on this server: no request in flight
+   * and no SSE stream. A held stream is how a connected Streamable-HTTP client waits
+   * for notifications, and it stamps activity only when it opens, so judging by
+   * `lastActivity` alone expired connected clients first.
+   */
+  function isIdle(session: Session, now: number): boolean {
+    return session.finiteInFlight === 0
+      && session.openSseStreams === 0
+      && now - session.lastActivity >= sessionIdleTtlMs;
+  }
+
+  function closeExpiredSessions(now: number): void {
+    for (const session of sessions.values()) {
+      if (isIdle(session, now)) void closeSession(session, 'ttl');
+    }
+  }
+
+  /**
+   * The session to evict at the cap: never one with a request in flight, and one
+   * without an open stream before one holding a stream, oldest first within each.
+   * Stream holders stay evictable as the last resort because a client that vanished
+   * without FIN/RST keeps its stream open until a write to it fails, which can take
+   * many minutes, and 64 such sessions would refuse every new client until then.
+   */
+  function pickEvictionCandidate(): Session | undefined {
+    let best: Session | undefined;
+    for (const session of sessions.values()) {
+      if (session.finiteInFlight > 0 || evictionClaims.has(session)) continue;
+      if (!best) { best = session; continue; }
+      const holdsStream = session.openSseStreams > 0;
+      const bestHoldsStream = best.openSseStreams > 0;
+      if (holdsStream !== bestHoldsStream ? !holdsStream : session.lastActivity < best.lastActivity) {
+        best = session;
+      }
+    }
+    return best;
+  }
+
+  function beginRequest(session: Session, req: IncomingMessage, res: ServerResponse): () => void {
+    const isSseStream = req.method === 'GET';
+    if (isSseStream) session.openSseStreams++;
+    else session.finiteInFlight++;
+    session.lastActivity = Date.now();
+    const initializing = session.pending;
+    let completed = false;
+    const complete = (aborted: boolean) => {
+      if (completed) return;
+      completed = true;
+      res.off('finish', onFinish);
+      res.off('close', onClose);
+      if (isSseStream) session.openSseStreams--;
+      else session.finiteInFlight--;
+      session.lastActivity = Date.now();
+      if (session.pending || (initializing && aborted)) void closeSession(session, 'init-abort');
+    };
+    const onFinish = () => { complete(false); };
+    const onClose = () => { complete(!res.writableFinished); };
+    res.once('finish', onFinish);
+    res.once('close', onClose);
+    return () => { complete(true); };
+  }
 
   /** Route to the session's transport, or start a new session on `initialize`. */
   async function resolveTransport(
     req: IncomingMessage,
     res: ServerResponse,
     parsedBody?: unknown,
-  ): Promise<StreamableHTTPServerTransport | null> {
+  ): Promise<Session | null> {
     const sessionId = req.headers['mcp-session-id'] as string | undefined;
 
     if (sessionId) {
-      const existing = transports.get(sessionId);
-      if (existing) return existing;
+      const existing = sessions.get(sessionId);
+      if (existing) {
+        if (isIdle(existing, Date.now())) {
+          await closeSession(existing, 'ttl');
+        } else {
+          return existing;
+        }
+      }
       jsonRpcError(res, 404, -32001, 'Session not found or expired. Re-initialize to obtain a new session.');
       return null;
     }
@@ -325,26 +662,135 @@ export async function startHttpServer(
       return null;
     }
 
-    if (transports.size >= MAX_SESSIONS) {
-      jsonRpcError(res, 503, -32000, `Server is at its session limit (${MAX_SESSIONS}). Close an existing session and retry.`);
-      return null;
-    }
+    closeExpiredSessions(Date.now());
 
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: () => randomUUID(),
-      enableDnsRebindingProtection: true,
-      allowedHosts,
-      onsessioninitialized: (id) => { transports.set(id, transport); },
-      onsessionclosed: (id) => { transports.delete(id); },
-    });
-    // Covers transport teardown that isn't a DELETE (client disconnect, error).
-    transport.onclose = () => {
-      if (transport.sessionId) transports.delete(transport.sessionId);
+    // At the cap, claim a session to make room with; `pickEvictionCandidate` skips
+    // sessions another initialize has already claimed, so concurrent initializes at
+    // the cap each claim a different one, and the 503 comes only when none is left.
+    let claim: Session | undefined;
+    if (sessions.size + pendingReservations.size >= MAX_SESSIONS) {
+      claim = pickEvictionCandidate();
+      if (!claim) {
+        console.error(`MCP session limit reached ${formatSessionStats(sessionStats())}`);
+        jsonRpcError(res, 503, -32000, `Server is at its session limit (${MAX_SESSIONS}). Close an existing session and retry.`);
+        return null;
+      }
+      evictionClaims.add(claim);
+    }
+    const releaseClaim = () => {
+      if (claim) evictionClaims.delete(claim);
+      claim = undefined;
     };
 
-    const mcp = await createMcpServer();
-    await mcp.connect(transport);
-    return transport;
+    const releasePending = reservePendingSession();
+    let clientClosed = false;
+    const markClientClosed = () => {
+      clientClosed = true;
+      releasePending();
+      releaseClaim();
+    };
+    res.once('close', markClientClosed);
+
+    let mcp: McpServer | undefined;
+    let session: Session | undefined;
+    try {
+      mcp = await createMcpServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        enableDnsRebindingProtection: true,
+        allowedHosts,
+        onsessioninitialized: (id) => {
+          session!.id = id;
+          if (session!.pending) {
+            session!.pending = false;
+            session!.releasePending();
+          }
+          releaseClaim();
+          if (session!.closing) return;
+          // Admitted: now make room, counting only admitted sessions, since another
+          // initialize still in progress may yet be refused. The claim only reserved a
+          // candidate; the least recently active session is taken now, which may since
+          // have become a different one. If every session is busy the cap is exceeded
+          // rather than refusing a client already admitted, and the next admission
+          // brings the count back under it.
+          while (sessions.size >= MAX_SESSIONS) {
+            const victim = pickEvictionCandidate();
+            if (!victim) break;
+            void closeSession(victim, 'lru');
+          }
+          sessions.set(id, session!);
+        },
+        onsessionclosed: () => { detachSession(session!, 'delete'); },
+      });
+      session = {
+        transport,
+        server: mcp,
+        lastActivity: Date.now(),
+        finiteInFlight: 0,
+        openSseStreams: 0,
+        closing: false,
+        pending: true,
+        releasePending,
+        releaseEvictionClaim: releaseClaim,
+      };
+      // Covers transport teardown that isn't a DELETE (client disconnect, error).
+      transport.onclose = () => {
+        detachSession(session!, 'transport-close');
+      };
+
+      await mcp.connect(transport);
+      if (clientClosed || res.destroyed) {
+        await closeSession(session, 'init-abort');
+        return null;
+      }
+      return session;
+    } catch (error) {
+      if (session) await closeSession(session, 'init-abort');
+      else {
+        releasePending();
+        releaseClaim();
+      }
+      throw error;
+    } finally {
+      res.off('close', markClientClosed);
+    }
+  }
+
+  async function handleMcpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsedBody?: unknown,
+  ): Promise<void> {
+    const session = await resolveTransport(req, res, parsedBody);
+    if (!session) return;
+    if (res.destroyed) {
+      if (session.pending) await closeSession(session, 'init-abort');
+      return;
+    }
+    const finish = beginRequest(session, req, res);
+    try {
+      await session.transport.handleRequest(req, res, parsedBody);
+    } catch (error) {
+      finish();
+      throw error;
+    }
+  }
+
+  /**
+   * The request handlers' last stop for a throw, such as a server factory that fails.
+   * Without it the rejection went unhandled and the client never got an answer.
+   */
+  async function serveMcpRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    parsedBody?: unknown,
+  ): Promise<void> {
+    try {
+      await handleMcpRequest(req, res, parsedBody);
+    } catch (error) {
+      console.error('MCP request failed:', error);
+      if (!res.headersSent) jsonRpcError(res, 500, -32603, 'Internal error');
+    }
   }
 
   const httpServer = createServer(async (req, res) => {
@@ -356,22 +802,24 @@ export async function startHttpServer(
     const isHealthProbe = req.method === 'GET' && url.pathname === '/health';
 
     if (!isHealthProbe) {
-      // Checked before the token is compared, not after — so an exhausted budget answers
-      // 429 without evaluating the guess. Gating only the 401 path instead would throttle
-      // nothing: the comparison would still happen and a correct token would still be
-      // served, so the status code would still tell an attacker which guess was right.
       let key = '';
-      if (authFailureLimiter) {
+      if (authFailureLimiter || rateLimiter) {
         const resolved = clientKey(req, opts.trustProxy === true, opts.trustedProxies);
         key = resolved.key;
         // Warned in both directions. Without `--trustProxy` a proxied deployment shares
         // one budget; *with* it, an entry that could not be read leaves the same collapse
         // in place, and that case used to be the silent one — the operator had set the
         // flag and had no way to know it was not taking effect.
+        // Resolved for either limiter: with only `--rateLimit` on, skipping this charged
+        // every client to one key and kept the warning silent.
         if (resolved.forwardedIgnored || (opts.trustProxy !== true && req.headers['x-forwarded-for'])) {
           warnSharedBudget();
         }
       }
+      // Checked before the token is compared, not after — so an exhausted budget answers
+      // 429 without evaluating the guess. Gating only the 401 path instead would throttle
+      // nothing: the comparison would still happen and a correct token would still be
+      // served, so the status code would still tell an attacker which guess was right.
       if (authFailureLimiter) {
         const { allowed, retryAfterMs } = authFailureLimiter.peek(key);
         if (!allowed) {
@@ -414,24 +862,30 @@ export async function startHttpServer(
         }));
         return;
       }
-    }
 
-    if (rateLimiter && url.pathname === '/' && (req.method === 'POST' || req.method === 'GET' || req.method === 'DELETE')) {
-      const { allowed, retryAfterMs } = rateLimiter.tryConsume();
-      if (!allowed) {
-        const retryAfterSec = Math.ceil(retryAfterMs / 1000);
-        res.writeHead(429, {
-          'Content-Type': 'application/json',
-          'Retry-After': String(retryAfterSec),
-        });
-        res.end(JSON.stringify({
-          jsonrpc: '2.0',
-          error: {
-            code: -32604,
-            message: `Rate limit exceeded. Retry after ${retryAfterSec}s.`,
-          },
-        }));
-        return;
+      // Charged after the token check, never before: a request bucket is per client, but
+      // unauthenticated traffic reaching it could still spend a victim's budget under a
+      // spoofable key, and its 429 would answer a guess without evaluating it. Every
+      // authenticated route spends from it, `/status` and 404s included: `/status` was
+      // unlimited, so a token holder could poll it without bound.
+      if (rateLimiter) {
+        const { allowed, retryAfterMs } = rateLimiter.tryConsume(key);
+        if (!allowed) {
+          const retryAfterSec = Math.ceil(retryAfterMs / 1000);
+          res.writeHead(429, {
+            'Content-Type': 'application/json',
+            'Retry-After': String(retryAfterSec),
+          });
+          res.end(JSON.stringify({
+            jsonrpc: '2.0',
+            error: {
+              code: -32604,
+              message: `Rate limit exceeded. Retry after ${retryAfterSec}s.`,
+            },
+            id: null,
+          }));
+          return;
+        }
       }
     }
 
@@ -474,17 +928,13 @@ export async function startHttpServer(
           jsonRpcError(res, 400, -32700, 'Parse error: invalid JSON');
           return;
         }
-        const transport = await resolveTransport(req, res, parsed);
-        if (!transport) return;
-        await transport.handleRequest(req, res, parsed);
+        await serveMcpRequest(req, res, parsed);
       });
       return;
     }
 
     if ((req.method === 'GET' || req.method === 'DELETE') && url.pathname === '/') {
-      const transport = await resolveTransport(req, res);
-      if (!transport) return;
-      await transport.handleRequest(req, res);
+      await serveMcpRequest(req, res);
       return;
     }
 
@@ -501,6 +951,7 @@ export async function startHttpServer(
           role: p.role,
           readOnly: p.readOnly,
         })),
+        mcpSessions: sessionStats(),
       }));
       return;
     }
@@ -525,6 +976,10 @@ export async function startHttpServer(
     res.end(JSON.stringify({ error: 'Not found' }));
   });
 
+  httpServer.once('close', () => {
+    void Promise.all(Array.from(sessions.values(), (session) => closeSession(session, 'transport-close')));
+  });
+
   // Previously listen() had no error handler, so EADDRINUSE surfaced as an
   // unhandled 'error' event and a raw stack — and startHttpServer resolved
   // immediately regardless, so the caller carried on as if the server was up.
@@ -545,7 +1000,7 @@ export async function startHttpServer(
       console.error(`SSH MCP Server v2 (HTTP) listening on http://${host}:${port}`);
       console.error('Endpoints: POST / (MCP), GET /status, GET /health');
       if (rateLimiter) {
-        console.error(`Rate limit: ${opts.rateLimit} req/min`);
+        console.error(`Rate limit: ${opts.rateLimit} req/min per client`);
       }
       if (authFailureLimiter) {
         console.error(`Auth failure limit: ${authFailureLimit}/min per client`);
@@ -553,4 +1008,5 @@ export async function startHttpServer(
       resolve();
     });
   });
+  return httpServer;
 }

@@ -21,7 +21,7 @@ function makeProfile(overrides: Partial<Profile> = {}): Profile {
   return {
     name: 'dev', group: 'dev', host: 'localhost', port: 22, user: 'test',
     auth: 'agent', tty: false, timeout: 60000, maxChars: 5000,
-    maxOutputBytes: 1048576, role: 'operator', readOnly: false, announceAgent: true,
+    maxOutputBytes: 1048576, outputTruncation: 'head', role: 'operator', readOnly: false, announceAgent: true,
     approvalPolicy: 'ask-destructive', cert: false,
     sessionMaxPerConnection: 5, sessionIdleTimeoutMs: 60000,
     sessionBackgroundMaxMs: 3600000, commandQuotaPerDay: 0,
@@ -82,7 +82,7 @@ describe('OPA evaluation', () => {
     const engine = new PolicyEngine(DEFAULT_RULES);
     engine.setOpaUrl(url);
 
-    const local = engine.evaluate('ls -la', makeProfile(), 'read-command');
+    const local = engine.evaluate('ls -la', makeProfile());
     expect(local.decision).not.toBe('deny');
 
     const result = await engine.evaluateWithOpa('ls -la', makeProfile(), 'read-command');
@@ -117,6 +117,77 @@ describe('OPA evaluation', () => {
     expect(input.resource.binary).toBe('rm');
     expect(input.resource.host).toBe('localhost');
     expect(input.context).toEqual({ readOnly: false });
+  });
+
+  // #230: the tool pipeline goes through evaluateWithOpa, so the path has to reach the
+  // local denylist there too — and a local refusal never consults the sidecar.
+  it('refuses on the remote path locally, before OPA is asked', async () => {
+    await startOpa(() => ({ body: { result: true } }));
+    const engine = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['authorized_keys$'] });
+    engine.setOpaUrl(url);
+
+    const path = '/root/.ssh/authorized_keys';
+    const result = await engine.evaluateWithOpa(
+      `sftp:upload-file ${path} <- ./k`, makeProfile({ role: 'admin' }), 'sftp-upload-file', { remotePath: path },
+    );
+    expect(result.decision).toBe('deny');
+    expect(result.ruleId).toBe('denylist');
+    expect(requests).toHaveLength(0);
+  });
+
+  // #230: a rego rule can match the path of an SFTP tool without parsing our string.
+  // The spelling is pinned as-given — a non-normal one — so a regression that
+  // normalizes before building the input is visible: an operator's `startswith` rule
+  // would silently stop matching the spellings it was written for.
+  it('sends the remote path, as given, with both readings the denylist tests; omits all three otherwise', async () => {
+    await startOpa(() => ({ body: { result: true } }));
+    const engine = new PolicyEngine(DEFAULT_RULES);
+    engine.setOpaUrl(url);
+
+    await engine.evaluateWithOpa('sftp:list /srv//data/.', makeProfile(), 'sftp-list', { remotePath: '/srv//data/.' });
+    await engine.evaluateWithOpa('ls -la', makeProfile(), 'read-command');
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].input.resource.remotePath).toBe('/srv//data/.');
+    expect(requests[0].input.resource.remotePathNormalized).toBe('/srv/data');
+    expect(requests[0].input.resource.remotePathWindows).toBe('/srv/data');
+    expect(requests[1].input.resource).not.toHaveProperty('remotePath');
+    expect(requests[1].input.resource).not.toHaveProperty('remotePathNormalized');
+    expect(requests[1].input.resource).not.toHaveProperty('remotePathWindows');
+  });
+
+  // The write declaration rides with the path readings: a rego rule can ask what the
+  // call does to the path without parsing our composed string. Reads and non-SFTP
+  // tools omit the key entirely, exactly like the path keys.
+  it('sends remoteWrite only when the tool declared the call writes its path', async () => {
+    await startOpa(() => ({ body: { result: true } }));
+    const engine = new PolicyEngine(DEFAULT_RULES);
+    engine.setOpaUrl(url);
+
+    await engine.evaluateWithOpa('sftp:upload --overwrite /tmp/x', makeProfile(), 'sftp-upload', {
+      remotePath: '/tmp/x',
+      remoteWrite: true,
+    });
+    await engine.evaluateWithOpa('sftp:download /tmp/x', makeProfile(), 'sftp-download', { remotePath: '/tmp/x' });
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].input.resource.remoteWrite).toBe(true);
+    expect(requests[1].input.resource).not.toHaveProperty('remoteWrite');
+  });
+
+  // An empty path means none was passed — it must not arrive as `""`, which a rego
+  // `startswith` treats as a real value any rule can be surprised by.
+  it('omits every remote path key for an empty path', async () => {
+    await startOpa(() => ({ body: { result: true } }));
+    const engine = new PolicyEngine(DEFAULT_RULES);
+    engine.setOpaUrl(url);
+
+    await engine.evaluateWithOpa('sftp:list /srv/data', makeProfile(), 'sftp-list', { remotePath: '' });
+
+    expect(requests).toHaveLength(1);
+    expect(requests[0].input.resource).not.toHaveProperty('remotePath');
+    expect(requests[0].input.resource).not.toHaveProperty('remotePathNormalized');
+    expect(requests[0].input.resource).not.toHaveProperty('remotePathWindows');
   });
 
   it('does not consult OPA when the local policy already denied', async () => {

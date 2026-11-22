@@ -73,7 +73,6 @@ export interface TransferBounds {
 export interface UploadFileOptions extends TransferBounds {
   overwrite?: boolean;
   mode?: number;
-  /** Enables fail-closed remote-path checks for a configured Admin workspace. */
   scopedRoot?: string;
 }
 
@@ -593,11 +592,8 @@ export class SftpClient {
           throw new Error('Refusing to overwrite a remote file created during transfer');
         }
 
-        // Recheck immediately before publication, after transfer and before
-        // replacing an existing filename. Rename replaces a final symlink
-        // atomically rather than following it; parent checks block escapes.
-        if (opts.scopedRoot) await assertScopedSftpPath(sftp, opts.scopedRoot, remotePath, opts);
         try {
+          if (opts.scopedRoot) await assertScopedSftpPath(sftp, opts.scopedRoot, remotePath, opts);
           await publishRemote(sftp, temporary, remotePath, opts);
           published = true;
         } catch (err) {

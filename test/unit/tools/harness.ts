@@ -3,15 +3,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { registerTools, registerResources } from '../../../src/tools/registry.js';
-import { PolicyEngine, DEFAULT_RULES } from '../../../src/policy/engine.js';
+import { PolicyEngine, DEFAULT_RULES, type PolicyRules } from '../../../src/policy/engine.js';
 import { AuditStore } from '../../../src/audit/store.js';
 import type { CommandResult, Profile } from '../../../src/types.js';
 import type { CloseOutcome } from '../../../src/ssh/session.js';
 import { ConnectionRegistry } from '../../../src/ssh/connection-registry.js';
 import { defaultsFromArgv } from '../../../src/cli.js';
 import type { ToolDeps } from '../../../src/tools/pipeline.js';
+import { makeProfile } from '../../fixtures/profile.js';
 
-type ToolOpts = Omit<ToolDeps, 'server' | 'registry' | 'policy' | 'audit'>;
+/**
+ * `approvalGrantTtlMs` is a config default, read live from the registry; it is accepted
+ * here and served from the stub registry's `currentDefaults()`.
+ */
+type ToolOpts = Omit<ToolDeps, 'server' | 'registry' | 'policy' | 'audit'> & { approvalGrantTtlMs?: number };
 
 /**
  * In-process MCP client + server over InMemoryTransport, with the SSH layer
@@ -20,28 +25,7 @@ type ToolOpts = Omit<ToolDeps, 'server' | 'registry' | 'policy' | 'audit'>;
  * every per-request security decision lives and which had no tests at all.
  */
 
-export const testProfile: Profile = {
-  name: 'dev',
-  group: 'dev',
-  host: 'stub',
-  port: 22,
-  user: 'tester',
-  auth: 'password',
-  tty: false,
-  timeout: 5000,
-  maxChars: 5000,
-  maxOutputBytes: 1_048_576,
-  role: 'admin',
-  readOnly: false,
-  announceAgent: true,
-  approvalPolicy: 'ask-destructive',
-  cert: false,
-  sessionMaxPerConnection: 5,
-  sessionIdleTimeoutMs: 60_000,
-  sessionBackgroundMaxMs: 3_600_000,
-  commandQuotaPerDay: 0,
-  transferMaxBytes: 268_435_456, transferTimeoutMs: 300_000,
-};
+export const testProfile: Profile = makeProfile();
 
 export interface ExecCall {
   command: string;
@@ -66,15 +50,19 @@ export interface Harness {
    * every unit test — including the ones written to cover it.
    */
   setCloseOutcome(outcome: CloseOutcome): void;
+  /** Every `openSession` call the tool layer made, options included. */
+  openSessionCalls: any[];
   close(): Promise<void>;
 }
 
 export async function createHarness(
   overrides: Partial<Profile> = {},
-  toolOpts: ToolOpts = {},
+  { approvalGrantTtlMs = 0, ...toolOpts }: ToolOpts = {},
+  rules: PolicyRules = DEFAULT_RULES,
 ): Promise<Harness> {
   const profile: Profile = { ...testProfile, ...overrides };
   const execCalls: ExecCall[] = [];
+  const openSessionCalls: any[] = [];
   const auditRecords: any[] = [];
   let approve = true;
   let closeOutcome: CloseOutcome = 'closed';
@@ -103,7 +91,12 @@ export async function createHarness(
     // Matches SSHConnection.listSessions(): Session objects, not SessionInfo —
     // the handler calls toInfo() itself.
     listSessions: () => [...sessions.values()],
-    async openSession({ name, type }: any) {
+    async openSession(opts: any) {
+      const { name, type } = opts;
+      // Recorded whole: the tool layer is the only place that decides whether a
+      // per-call ttlMs reaches SessionManager, and a stub that destructured
+      // `{ name, type }` could not tell the two apart.
+      openSessionCalls.push(opts);
       const session = {
         toInfo: () => ({ id: name, name, profile: profile.name, type, status: 'active', createdAt: new Date(), lastActivity: new Date(), ttlMs: 1000 }),
         run: async (command: string) => { execCalls.push({ command }); return makeResult(command); },
@@ -128,6 +121,8 @@ export async function createHarness(
     getProfile: () => profile,
     listConnections: () => [conn.toInfo()],
     listAllProfiles: () => [profile],
+    currentDefaults: () => ({ ...defaultsFromArgv({}), approvalGrantTtlMs }),
+    generation: 0,
   };
 
   // Capture audit records instead of writing to disk.
@@ -137,7 +132,7 @@ export async function createHarness(
     { name: 'test', version: '0.0.0' },
     { capabilities: { tools: {}, resources: {} } },
   );
-  registerTools(server, registry, new PolicyEngine(DEFAULT_RULES), audit, toolOpts);
+  registerTools(server, registry, new PolicyEngine(rules), audit, toolOpts);
   registerResources(server, registry);
 
   const client = new Client(
@@ -156,6 +151,7 @@ export async function createHarness(
   return {
     client,
     execCalls,
+    openSessionCalls,
     auditRecords,
     setExecResult(result) { execResult = result; },
     setApproval(value) { approve = value; },

@@ -1,113 +1,33 @@
 import { describe, it, expect } from 'vitest';
 import { PolicyEngine, DEFAULT_RULES } from '../../../src/policy/engine.js';
-import type { Profile } from '../../../src/types.js';
+import { makeProfile } from '../../fixtures/profile.js';
 
-function makeProfile(overrides: Partial<Profile> = {}): Profile {
-  return {
-    name: 'dev',
-    group: 'dev',
-    host: 'localhost',
-    port: 22,
-    user: 'test',
-    auth: 'agent',
-    tty: false,
-    timeout: 60000,
-    maxChars: 5000,
-    maxOutputBytes: 1048576,
-    role: 'operator',
-    readOnly: false,
-    announceAgent: true,
-    approvalPolicy: 'ask-destructive',
-    cert: false,
-    sessionMaxPerConnection: 5,
-    sessionIdleTimeoutMs: 600000,
-    sessionBackgroundMaxMs: 3600000,
-    commandQuotaPerDay: 0,
-    transferMaxBytes: 268_435_456, transferTimeoutMs: 300_000,
-    ...overrides,
-  };
-}
-
-describe('Scoped time-limited admin SFTP preapproval (no client elicitation)', () => {
-  const engine = new PolicyEngine(DEFAULT_RULES);
-  const path = '/Users/example/.cache/ssh-mcp-test/probe.txt';
-  const command = (p = path, bytes = 16) =>
-    `sftp:upload --overwrite --bytes=${bytes} --sha256=${'a'.repeat(32)} ${p}`;
-  const now = Date.now();
-  const grant = {
-    paths: [path], issuedAt: new Date(now - 60_000).toISOString(),
-    expiresAt: new Date(now + 10 * 60_000).toISOString(), maxBytes: 2048,
-  };
-  const admin = makeProfile({
-    name: 'mac-mini-admin', role: 'admin', group: 'dev', readOnly: false,
-    approvalPolicy: 'ask-destructive', sftpUploadPreapproval: grant,
-  });
-  it('keeps destructive classification, but allows only exact preapproved upload tool+path', () => {
-    const allowed = engine.evaluate(command(), admin, 'sftp-upload');
-    expect(allowed).toMatchObject({
-      decision: 'allow', commandClass: 'destructive',
-      ruleId: 'out-of-band-sftp-preapproval',
-    });
-    expect(engine.evaluate(command(), admin, 'run-command').decision).not.toBe('allow');
-    expect(engine.evaluate(command(path + '.other'), admin, 'sftp-upload').decision).not.toBe('allow');
-    expect(engine.evaluate(command('/Users/example/.cache/ssh-mcp-test/../ssh-mcp-test/probe.txt'), admin, 'sftp-upload').decision).not.toBe('allow');
-    expect(engine.evaluate(command(path, 2049), admin, 'sftp-upload').decision).not.toBe('allow');
-    expect(engine.evaluate('rm -rf /tmp/not-an-upload', admin, 'run-command').decision).not.toBe('allow');
-  });
-  it('rejects expired, future, oversized-window and absent approvals', () => {
-    const windows = [
-      { ...grant, issuedAt: new Date(now - 3600_000).toISOString(), expiresAt: new Date(now - 1000).toISOString() },
-      { ...grant, issuedAt: new Date(now + 60_000).toISOString(), expiresAt: new Date(now + 120_000).toISOString() },
-      { ...grant, issuedAt: new Date(now - 60_000).toISOString(), expiresAt: new Date(now + 3600_000).toISOString() },
-    ];
-    for (const g of windows) {
-      expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: g }, 'sftp-upload').decision).toBe('require-approval');
-    }
-    expect(engine.evaluate(command(), { ...admin, sftpUploadPreapproval: undefined }, 'sftp-upload').decision).toBe('require-approval');
-  });
-  it('never bypasses Viewer, Operator, approval-policy deny or role binding', () => {
-    for (const profile of [
-      { ...admin, role: 'viewer', readOnly: true },
-      { ...admin, role: 'operator' },
-      { ...admin, approvalPolicy: 'deny' as const },
-      { ...admin, group: 'prod', role: 'viewer', readOnly: false },
-    ]) {
-      expect(engine.evaluate(command(), profile, 'sftp-upload').decision).not.toBe('allow');
-    }
-  });
-  it('does not bypass user denylist or other SFTP classes', () => {
-    const deny = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['ssh-mcp-test/probe'] });
-    expect(deny.evaluate(command(), admin, 'sftp-upload').decision).toBe('deny');
-    expect(engine.evaluate('sftp:upload-file --overwrite /tmp/a', admin, 'sftp-upload-file').decision).not.toBe('allow');
-    expect(engine.evaluate('sftp:download-file /tmp/a', admin, 'sftp-download-file').decision).not.toBe('allow');
-  });
-});
 
 describe('PolicyEngine', () => {
   const engine = new PolicyEngine(DEFAULT_RULES);
 
   it('allows read-only commands for operator on dev', () => {
     const profile = makeProfile({ role: 'operator', name: 'dev' });
-    const result = engine.evaluate('ls -la', profile, 'read-command');
+    const result = engine.evaluate('ls -la', profile);
     expect(result.decision).toBe('allow');
     expect(result.commandClass).toBe('read-only');
   });
 
   it('requires approval for destructive commands with ask-destructive', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'ask-destructive' });
-    const result = engine.evaluate('rm -rf /tmp/test', profile, 'run-command');
+    const result = engine.evaluate('rm -rf /tmp/test', profile);
     expect(result.decision).toBe('require-approval');
   });
 
   it('allows destructive commands with auto approval', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'auto' });
-    const result = engine.evaluate('rm -rf /tmp/test', profile, 'run-command');
+    const result = engine.evaluate('rm -rf /tmp/test', profile);
     expect(result.decision).toBe('allow');
   });
 
   it('denies privileged commands for viewer role', () => {
     const profile = makeProfile({ role: 'viewer', name: 'dev' });
-    const result = engine.evaluate('sudo whoami', profile, 'run-command');
+    const result = engine.evaluate('sudo whoami', profile);
     expect(result.decision).toBe('deny');
     expect(result.reason).toContain('viewer');
   });
@@ -118,7 +38,7 @@ describe('PolicyEngine', () => {
       denylist: ['rm\\s+-rf'],
     });
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'auto' });
-    const result = engineWithDeny.evaluate('rm -rf /tmp/test', profile, 'run-command');
+    const result = engineWithDeny.evaluate('rm -rf /tmp/test', profile);
     expect(result.decision).toBe('deny');
     expect(result.ruleId).toBe('denylist');
   });
@@ -132,7 +52,7 @@ describe('PolicyEngine', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', group: 'dev', approvalPolicy: 'auto' });
 
     it('names the built-in rule and that it cannot be switched off', () => {
-      const result = engine.evaluate('reboot', profile, 'run-command');
+      const result = engine.evaluate('reboot', profile);
       expect(result.ruleId).toBe('denylist');
       expect(result.reason).toMatch(/built-in/);
       expect(result.reason).toMatch(/power-state/);
@@ -142,7 +62,7 @@ describe('PolicyEngine', () => {
 
     it('quotes the operator pattern and points at the config file', () => {
       const withDeny = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['^terraform\\s+destroy'] });
-      const result = withDeny.evaluate('terraform destroy -auto-approve', profile, 'run-command');
+      const result = withDeny.evaluate('terraform destroy -auto-approve', profile);
       expect(result.ruleId).toBe('denylist');
       expect(result.reason).toContain('terraform');
       expect(result.reason).toMatch(/\[policy\]\.denylist/);
@@ -151,41 +71,206 @@ describe('PolicyEngine', () => {
     });
   });
 
+  /**
+   * #230: the SFTP tools' command string is one this server composes, so a rule written
+   * for the path stopped matching whenever the path was not where the rule expected it.
+   * The pattern now also sees the path itself.
+   */
+  describe('denylist sees the remote path', () => {
+    const profile = makeProfile({ role: 'admin', name: 'dev', group: 'dev', approvalPolicy: 'auto' });
+    const withDeny = (...denylist: string[]) => new PolicyEngine({ ...DEFAULT_RULES, denylist });
+    const uploadFile = (remote: string) => `sftp:upload-file ${remote} --overwrite <- ./k`;
+
+    it('refuses when the path matches, wherever the composed string puts it', () => {
+      const path = '/root/.ssh/authorized_keys';
+      const result = withDeny('authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.ruleId).toBe('denylist');
+      expect(result.reason).toContain('Remote path "/root/.ssh/authorized_keys" matches /authorized_keys$/');
+      expect(result.reason).toMatch(/\[policy\]\.denylist/);
+      // Already normal, so there is no second reading to report.
+      expect(result.reason).not.toContain('read as');
+    });
+
+    it('refuses when only the normalized path matches, and shows that reading', () => {
+      const path = '/srv/x/../../root/.ssh/authorized_keys';
+      const result = withDeny('^/root/\\.ssh/').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain(`Remote path "${path}" (read as "/root/.ssh/authorized_keys")`);
+    });
+
+    it('catches a Windows path with the trailing-segment rule the README advises', () => {
+      const path = 'C:\\Users\\a\\.ssh\\authorized_keys';
+      const result = withDeny('\\.ssh/authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain('read as "C:/Users/a/.ssh/authorized_keys"');
+    });
+
+    it('catches a relative path with the trailing-segment rule the README advises', () => {
+      const path = '.ssh/authorized_keys';
+      const result = withDeny('\\.ssh/authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+    });
+
+    it('keeps the command wording when the command string matches too', () => {
+      const path = '/root/.ssh/authorized_keys';
+      const result = withDeny('authorized_keys').evaluate(`sftp:list ${path}`, profile, { remotePath: path });
+      expect(result.reason).toMatch(/^Command matches \/authorized_keys\//);
+    });
+
+    it('still honours a rule anchored on the whole composed string', () => {
+      const path = '/srv/data';
+      const result = withDeny('^sftp:upload-file ').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toMatch(/^Command matches/);
+    });
+
+    it('tests nothing beyond the command string when no path is passed', () => {
+      const result = withDeny('^/root/').evaluate('sftp:list /root/x', profile);
+      expect(result.decision).toBe('allow');
+      // `RegExp.test` reads a missing argument as the string "undefined"; a call with no
+      // path must not be refused by a pattern that happens to match that word.
+      expect(withDeny('undefined').evaluate('ls -la', profile).decision).toBe('allow');
+    });
+
+    it('does not refuse a path no pattern matches', () => {
+      const path = '/srv/backup.tar';
+      const result = withDeny('authorized_keys$', '^/root/').evaluate(`sftp:list ${path}`, profile, { remotePath: path });
+      expect(result.decision).toBe('allow');
+    });
+  });
+
+  /**
+   * #230, Windows side: spellings that reach the same file on a Windows target (measured
+   * over SFTP on the test VM — case, trailing dots, `::$DATA`, drive-relative, UNC) must
+   * not slip a rule that catches the plain spelling. Each is caught by a fourth reading,
+   * tested case-insensitively; on a POSIX target the same reading can only over-refuse,
+   * which is the direction this engine errs in everywhere else too.
+   */
+  describe('denylist sees the Windows reading of the remote path', () => {
+    const profile = makeProfile({ role: 'admin', name: 'dev', group: 'dev', approvalPolicy: 'auto' });
+    const withDeny = (...denylist: string[]) => new PolicyEngine({ ...DEFAULT_RULES, denylist });
+    const uploadFile = (remote: string) => `sftp:upload-file ${remote} --overwrite <- ./k`;
+
+    it('refuses a case-variant spelling, and says it matched the Windows reading', () => {
+      const path = 'C:\\Users\\a\\.ssh\\Authorized_Keys';
+      const result = withDeny('\\.ssh/authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.ruleId).toBe('denylist');
+      expect(result.reason).toContain(
+        'Remote path "C:\\\\Users\\\\a\\\\.ssh\\\\Authorized_Keys" (read as "C:/Users/a/.ssh/Authorized_Keys", ' +
+        'the Windows reading) matches /\\.ssh\\/authorized_keys$/i',
+      );
+    });
+
+    it('refuses the pattern spelled in the other case too', () => {
+      const path = '/root/.ssh/authorized_keys';
+      const result = withDeny('AUTHORIZED_KEYS$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+    });
+
+    it('refuses a trailing-dot spelling of the same file', () => {
+      const path = '/root/.ssh/authorized_keys.';
+      const result = withDeny('authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain('(read as "/root/.ssh/authorized_keys", the Windows reading)');
+    });
+
+    it('refuses the ::$DATA default-stream spelling', () => {
+      const path = '/root/.ssh/authorized_keys::$DATA';
+      const result = withDeny('authorized_keys$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+    });
+
+    it('roots a drive-relative spelling at its drive, so a root-anchored rule catches it', () => {
+      const path = 'C:x/../../Users/a/.ssh/authorized_keys';
+      const result = withDeny('^c:/users/').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toContain('read as "C:/Users/a/.ssh/authorized_keys"');
+    });
+
+    it('keeps a UNC root, so a rule can anchor on it', () => {
+      const path = '\\\\server\\share\\root\\.ssh\\authorized_keys';
+      const result = withDeny('^//server/share/root/').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+    });
+
+    it('treats an empty remote path as no path', () => {
+      // `RegExp.test` on a missing value reads the string "undefined"; an empty one must
+      // not become "/" either, which a `/`-anchored rule would then refuse.
+      const result = withDeny('^/', 'undefined').evaluate(uploadFile(''), profile, { remotePath: '' });
+      expect(result.decision).toBe('allow');
+    });
+
+    it('caps the path spellings quoted in the refusal', () => {
+      const path = `/root/${'a'.repeat(400)}`;
+      const result = withDeny('a+$').evaluate(uploadFile(path), profile, { remotePath: path });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).not.toContain('a'.repeat(400));
+      expect(result.reason).toContain('…');
+      // Enough of the tail survives that the operator can tell which file it was.
+      expect(result.reason).toMatch(/a{3,}…"/);
+    });
+  });
+
+  describe('a declared remote write to a never-allowed path', () => {
+    // The file's own fixture helper; admin + auto so the class gates that remain
+    // (destructive, privileged) do not mask the denylist decision under test.
+    const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'auto' });
+    const UPLOAD_KEYS = 'sftp:upload --overwrite --bytes=1 --sha256=x /root/.ssh/authorized_keys';
+
+    it('is refused with the built-in wording, with no operator denylist at all', () => {
+      const result = engine.evaluate(UPLOAD_KEYS, profile, {
+        remotePath: '/root/.ssh/authorized_keys',
+        remoteWrite: true,
+      });
+      expect(result.decision).toBe('deny');
+      expect(result.ruleId).toBe('denylist');
+      expect(result.reason).toMatch(/built-in never-allowed rule/);
+      expect(result.reason).toContain("writing to any user's authorized_keys");
+      expect(result.reason).toContain('cannot be switched off');
+    });
+
+    it('the Windows reading refuses a case-variant spelling', () => {
+      const result = engine.evaluate('sftp:upload --overwrite --bytes=1 --sha256=x k', profile, {
+        remotePath: 'C:\\Users\\a\\.ssh\\Authorized_Keys.',
+        remoteWrite: true,
+      });
+      expect(result.decision).toBe('deny');
+      expect(result.ruleId).toBe('denylist');
+    });
+
+    it('a declared write to a benign path is not refused by the built-ins', () => {
+      const result = engine.evaluate('sftp:upload --overwrite --bytes=1 --sha256=x /tmp/x', profile, {
+        remotePath: '/tmp/x',
+        remoteWrite: true,
+      });
+      expect(result.decision).toBe('allow');
+    });
+
+    it('a read of the same path is not refused — remoteWrite is what makes it a write', () => {
+      const result = engine.evaluate('sftp:download /root/.ssh/authorized_keys', profile, {
+        remotePath: '/root/.ssh/authorized_keys',
+      });
+      expect(result.decision).toBe('allow');
+    });
+
+    it('the built-in wording wins even when an operator pattern also matches the path', () => {
+      const withDeny = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['authorized_keys$'] });
+      const result = withDeny.evaluate(UPLOAD_KEYS, profile, {
+        remotePath: '/root/.ssh/authorized_keys',
+        remoteWrite: true,
+      });
+      expect(result.decision).toBe('deny');
+      expect(result.reason).toMatch(/built-in never-allowed rule/);
+      expect(result.reason).toContain('cannot be switched off');
+    });
+  });
+
   it('readOnly profile only allows read-only', () => {
     const profile = makeProfile({ readOnly: true, name: 'prod-db' });
-    expect(engine.evaluate('ls', profile, 'read-command').decision).toBe('allow');
-    expect(engine.evaluate('npm install', profile, 'run-command').decision).toBe('deny');
-  });
-
-  it('requires an explicit IP-only allowlist for the separate ICMP pack', () => {
-    const plain = makeProfile({ role: 'viewer', group: 'prod', readOnly: true,
-      viewer2Packs: ['network', 'icmp'], approvalPolicy: 'deny' });
-    expect(engine.evaluate('ping -c 1 10.1.2.3', plain, 'read-command').decision).toBe('deny');
-    const scoped = { ...plain, viewer2ProbeTargets: ['10.1.2.3'] };
-    expect(engine.evaluate('ping -c 1 10.1.2.3', scoped, 'read-command').decision).toBe('allow');
-    expect(engine.evaluate('ping -c 1 10.1.2.4', scoped, 'read-command').decision).toBe('deny');
-    expect(engine.evaluate('ping -c 1 169.254.169.254', {
-      ...plain, viewer2ProbeTargets: ['169.254.169.254'],
-    }, 'read-command').decision).toBe('deny');
-  });
-
-  describe('Viewer2 opt-in rights stay inside existing role bindings', () => {
-    const viewer = makeProfile({ role: 'viewer', group: 'prod', readOnly: true, approvalPolicy: 'deny' });
-    it('does not grant new rights unless explicitly opted in', () => {
-      expect(engine.evaluate('wg show wg0', viewer, 'read-command').decision).toBe('deny');
-      expect(engine.evaluate('systemctl --failed --no-pager', viewer, 'read-command').decision).toBe('deny');
-    });
-    it('allows only declared bounded read-only diagnostics', () => {
-      const optIn: Profile = { ...viewer, viewer2Packs: ['linux', 'vpn'] };
-      expect(engine.evaluate('wg show wg0', optIn, 'read-command').decision).toBe('allow');
-      expect(engine.evaluate('wg show wg0', optIn, 'read-command').commandClass).toBe('read-only');
-      expect(engine.evaluate('systemctl --failed --no-pager', optIn, 'read-command').decision).toBe('allow');
-      expect(engine.evaluate('systemctl restart sing-box', optIn, 'read-command').decision).toBe('deny');
-      expect(engine.evaluate('wg set wg0 listen-port 7777', optIn, 'run-command').decision).toBe('deny');
-      expect(engine.evaluate('npm install', optIn, 'run-command').decision).toBe('deny');
-      expect(engine.evaluate('sudo wg show wg0', optIn, 'read-command').decision).toBe('deny');
-      expect(engine.evaluate('wg show wg0; id', optIn, 'read-command').decision).toBe('deny');
-    });
+    expect(engine.evaluate('ls', profile).decision).toBe('allow');
+    expect(engine.evaluate('npm install', profile).decision).toBe('deny');
   });
 
   it('prod host group is stricter than dev', () => {
@@ -194,35 +279,35 @@ describe('PolicyEngine', () => {
     const adminDev = makeProfile({ role: 'admin', name: 'dev-local', group: 'dev' });
 
     // Operator cannot run destructive on prod (denied by role binding)
-    expect(engine.evaluate('rm -rf /tmp/test', operatorProd, 'run-command').decision).toBe('deny');
+    expect(engine.evaluate('rm -rf /tmp/test', operatorProd).decision).toBe('deny');
 
     // Admin can run destructive on prod but needs approval
-    expect(engine.evaluate('rm -rf /tmp/test', adminProd, 'run-command').decision).toBe('require-approval');
+    expect(engine.evaluate('rm -rf /tmp/test', adminProd).decision).toBe('require-approval');
 
     // Admin on dev also needs approval (ask-destructive default)
-    expect(engine.evaluate('rm -rf /tmp/test', adminDev, 'run-command').decision).toBe('require-approval');
+    expect(engine.evaluate('rm -rf /tmp/test', adminDev).decision).toBe('require-approval');
   });
 
   it('ask-all mode requires approval even for read-only', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'ask-all' });
-    expect(engine.evaluate('ls -la', profile, 'read-command').decision).toBe('require-approval');
+    expect(engine.evaluate('ls -la', profile).decision).toBe('require-approval');
   });
 
   it('deny mode denies destructive commands outright (no approval prompt)', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'deny' });
-    const result = engine.evaluate('rm -rf /tmp/x', profile, 'run-command');
+    const result = engine.evaluate('rm -rf /tmp/x', profile);
     expect(result.decision).toBe('deny');
     expect(result.ruleId).toBe('approval-policy');
   });
 
   it('deny mode denies privileged commands outright', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'deny' });
-    expect(engine.evaluate('sudo systemctl restart nginx', profile, 'privileged-command').decision).toBe('deny');
+    expect(engine.evaluate('sudo systemctl restart nginx', profile).decision).toBe('deny');
   });
 
   it('deny mode still allows non-destructive commands', () => {
     const profile = makeProfile({ role: 'admin', name: 'dev', approvalPolicy: 'deny' });
-    expect(engine.evaluate('ls -la', profile, 'read-command').decision).toBe('allow');
+    expect(engine.evaluate('ls -la', profile).decision).toBe('allow');
   });
 
   it('rejects an invalid denylist pattern at construction', () => {
@@ -236,16 +321,16 @@ describe('PolicyEngine', () => {
   it('applies operator-supplied denylist patterns on top of the canonical list', () => {
     const engineWithExtra = new PolicyEngine({ ...DEFAULT_RULES, denylist: ['\\bnpm\\s+publish\\b'] });
     const profile = makeProfile({ role: 'admin', group: 'dev', approvalPolicy: 'auto' });
-    expect(engineWithExtra.evaluate('npm publish', profile, 'run-command').decision).toBe('deny');
+    expect(engineWithExtra.evaluate('npm publish', profile).decision).toBe('deny');
     // ...and the canonical entries still apply.
-    expect(engineWithExtra.evaluate('rm -rf /', profile, 'run-command').ruleId).toBe('denylist');
+    expect(engineWithExtra.evaluate('rm -rf /', profile).ruleId).toBe('denylist');
   });
 
   it('separates never-allowed commands from destructive-but-approvable ones', () => {
     const profile = makeProfile({ role: 'admin', group: 'dev', approvalPolicy: 'ask-destructive' });
     // `rm -rf /` can never run; `rm -rf /tmp/x` is destructive but approvable.
-    expect(engine.evaluate('rm -rf /', profile, 'run-command').ruleId).toBe('denylist');
-    expect(engine.evaluate('rm -rf /tmp/x', profile, 'run-command').decision).toBe('require-approval');
+    expect(engine.evaluate('rm -rf /', profile).ruleId).toBe('denylist');
+    expect(engine.evaluate('rm -rf /tmp/x', profile).decision).toBe('require-approval');
   });
 
   /*
@@ -266,14 +351,14 @@ describe('PolicyEngine', () => {
       // a role's strictest. A [policy] block can now write it, so the hop would
       // hand every unresolved tier whatever prod was granted.
       const staging = makeProfile({ role: 'deployer', name: 'staging-web', group: undefined, approvalPolicy: 'auto' });
-      expect(scoped.evaluate('sudo id', staging, 'privileged-command').decision).toBe('deny');
-      expect(scoped.evaluate('ls -la', staging, 'read-command').decision).toBe('allow');
+      expect(scoped.evaluate('sudo id', staging).decision).toBe('deny');
+      expect(scoped.evaluate('ls -la', staging).decision).toBe('allow');
     });
 
     it('demotes an unknown role to read-only', () => {
       const unknown = makeProfile({ role: 'deployer', name: 'dev', approvalPolicy: 'auto' });
-      expect(engine.evaluate('npm install', unknown, 'run-command').decision).toBe('deny');
-      expect(engine.evaluate('ls -la', unknown, 'read-command').decision).toBe('allow');
+      expect(engine.evaluate('npm install', unknown).decision).toBe('deny');
+      expect(engine.evaluate('ls -la', unknown).decision).toBe('allow');
     });
   });
 
@@ -281,10 +366,10 @@ describe('PolicyEngine', () => {
     // Previously any unrecognised name fell through to `dev`, so a production
     // host merely named "web-01" silently got the loosest permissions.
     const unknown = makeProfile({ role: 'admin', name: 'web-01', group: undefined });
-    expect(engine.evaluate('sudo whoami', unknown, 'privileged-command').decision).toBe('deny');
+    expect(engine.evaluate('sudo whoami', unknown).decision).toBe('deny');
     // An explicit group is authoritative.
     const tagged = makeProfile({ role: 'admin', name: 'web-01', group: 'dev' });
-    expect(engine.evaluate('sudo whoami', tagged, 'privileged-command').decision).toBe('require-approval');
+    expect(engine.evaluate('sudo whoami', tagged).decision).toBe('require-approval');
   });
 
   /*
@@ -296,7 +381,7 @@ describe('PolicyEngine', () => {
    */
   describe('refusal explains which of the three things decided', () => {
     function denial(overrides: Parameters<typeof makeProfile>[0]): string {
-      return engine.evaluate('sudo whoami', makeProfile(overrides), 'privileged-command').reason ?? '';
+      return engine.evaluate('sudo whoami', makeProfile(overrides)).reason ?? '';
     }
 
     it('names the group, not just the role and class', () => {

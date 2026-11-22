@@ -1,21 +1,31 @@
-import { approvedSftpUpload } from './sftp-preapproval.js';
-import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
 import type {
   CommandClass,
+  ParsedCommand,
   PolicyConfig,
   PolicyEvaluation,
   Profile,
   ApprovalMode,
 } from '../types.js';
-import { classifyCommand, findForbiddenMatch } from './classifier.js';
+import { classifyCommand, findForbiddenMatch, formatReadOnlyRejection } from './classifier.js';
+import { isViewer2ReadOnly } from './viewer2.js';
+import { isExtensionReadOnly } from './legacy-readonly.js';
+import { approvedSftpUpload } from './sftp-preapproval.js';
+import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
+import { normalizeRemotePath, normalizeRemotePathForWindows } from './remote-path.js';
+import { findNeverAllowedWriteTarget, neverAllowedWriteLabel } from './never-allowed-writes.js';
 import { OperatorError } from '../errors.js';
+
+/** The operator-facing promise every built-in never-allowed refusal ends with. */
+const NEVER_ALLOWED_TRAILER =
+  'This list cannot be switched off — the [policy].denylist key adds patterns, it does not remove these.';
 
 export interface PolicyRules {
   roleBindings: Record<string, Record<string, CommandClass[]>>;
   /**
    * Extra deny patterns supplied by the operator, as regex source strings.
-   * The canonical never-allowed list (FORBIDDEN_PATTERNS) lives in
-   * classifier.ts and is always applied on top of these — not repeated here.
+   * The canonical never-allowed list lives in classifier.ts (FORBIDDEN_PATTERNS,
+   * FORBIDDEN_RULES) plus src/policy/never-allowed-writes.ts for the write-path
+   * families, and is always applied on top of these — not repeated here.
    */
   denylist?: string[];
 }
@@ -242,28 +252,84 @@ export function resolvePolicyRules(
   return merged;
 }
 
+/**
+ * What a call acts on, beyond its command string. Only the SFTP tools pass anything:
+ * their command string is one this server composes, so a `[policy].denylist` rule
+ * written for the path is also tested against the path itself (#230). The same value
+ * lands in the OPA input's `resource` — the name follows that vocabulary, where the
+ * resource is what is acted on and the subject is the profile doing the acting.
+ */
+export interface PolicyResource {
+  remotePath?: string;
+  /**
+   * The call writes its remote path. Set by the SFTP upload tools, left unset by the
+   * read tools: the never-allowed write paths are refused for a declared write and
+   * stay class-governed for a read, and the fact is the tool layer's to state — the
+   * engine does not guess it from the composed command string.
+   */
+  remoteWrite?: boolean;
+}
+
+/**
+ * Compile eagerly: a deny rule that silently degrades (the old code fell back to
+ * substring-matching the command against the regex *source*) is worse than a startup
+ * failure, because nothing surfaces the degradation.
+ */
+function compileDenylist(rules: PolicyRules): ReadonlyArray<{ exact: RegExp; caseInsensitive: RegExp }> {
+  return (rules.denylist ?? []).map((pattern) => {
+    try {
+      return { exact: new RegExp(pattern), caseInsensitive: new RegExp(pattern, 'i') };
+    } catch (err) {
+      throw new OperatorError(
+        `Invalid denylist pattern ${JSON.stringify(pattern)}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  });
+}
+
+/**
+ * Rules ready to run on: the rules as given, and the operator's denylist patterns
+ * compiled once — each twice: as written, and case-insensitively for the Windows
+ * reading of a remote path, where a case variant reaches the same file (#230). The
+ * built-ins live in classifier.ts.
+ */
+export interface CompiledRules {
+  readonly rules: PolicyRules;
+  readonly patterns: ReadonlyArray<{ exact: RegExp; caseInsensitive: RegExp }>;
+}
+
 export class PolicyEngine {
   private opaUrl: string | null = null;
   private opaFailClosed = false;
   private opaTimeoutMs = DEFAULT_OPA_TIMEOUT_MS;
   /** Rate-limits the fail-open warning so one outage can't flood stderr. */
   private lastOpaWarning = 0;
-  /** The operator's patterns, compiled once. The built-ins live in classifier.ts. */
-  private readonly userPatterns: RegExp[];
+  private compiled: CompiledRules;
 
-  constructor(private rules: PolicyRules = DEFAULT_RULES) {
-    // Compile eagerly: a deny rule that silently degrades (the old code fell
-    // back to substring-matching the command against the regex *source*) is
-    // worse than a startup failure, because nothing surfaces the degradation.
-    this.userPatterns = (rules.denylist ?? []).map((pattern) => {
-      try {
-        return new RegExp(pattern);
-      } catch (err) {
-        throw new OperatorError(
-          `Invalid denylist pattern ${JSON.stringify(pattern)}: ${err instanceof Error ? err.message : String(err)}`,
-        );
-      }
-    });
+  /**
+   * The fallible half of installing rules: throws on a denylist pattern that is not a
+   * valid regular expression. A reload calls it while validating, before anything is
+   * swapped, and hands the result to `replaceRules`.
+   */
+  static compile(rules: PolicyRules): CompiledRules {
+    return { rules, patterns: compileDenylist(rules) };
+  }
+
+  constructor(rules: PolicyRules = DEFAULT_RULES) {
+    this.compiled = PolicyEngine.compile(rules);
+  }
+
+  /** The rules the engine runs on now: what a reload compares new rules with. */
+  get rules(): PolicyRules {
+    return this.compiled.rules;
+  }
+
+  /**
+   * Swap in reloaded rules, already compiled, in one assignment: it cannot throw, so the
+   * engine is never on half of each. OPA settings are argv-only and stay as they are.
+   */
+  replaceRules(compiled: CompiledRules): void {
+    this.compiled = compiled;
   }
 
   setOpaUrl(url: string | null, failClosed = false, timeoutMs = DEFAULT_OPA_TIMEOUT_MS): void {
@@ -279,13 +345,28 @@ export class PolicyEngine {
   evaluate(
     command: string,
     profile: Profile,
-    _toolName: string,
+    resource: PolicyResource = {},
   ): PolicyEvaluation {
-    const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
+    const parsed = classifyCommand(command);
+    // Promote ONLY an upstream 'safe' result for a strictly literal, opt-in
+    // diagnostic matcher. Never downgrade destructive/privileged classifications.
+    // Upstream built-in denials and remote write-path restrictions still govern.
+    if (parsed.class === 'safe' && (
+        isViewer2ReadOnly(command, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? [])
+        || isExtensionReadOnly(command, profile.readOnlyExtensions ?? [])
+    )) {
+      parsed.class = 'read-only';
+      parsed.readOnlyRejection = undefined;
+    }
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);
+    // Copied onto every branch below rather than just the role-binding one:
+    // `read-command`'s `enforceClass` check reads it off an `allow` decision,
+    // since a grammar-rejected reader is allowed as `safe` for most roles and
+    // only refused one layer up, in the tool itself.
+    const readOnlyRejection = parsed.readOnlyRejection;
 
-    const denied = this.findDenyMatch(command);
+    const denied = this.findDenyMatch(command, resource);
     if (denied) {
       return {
         decision: 'deny',
@@ -293,6 +374,7 @@ export class PolicyEngine {
         binary: parsed.binary,
         ruleId: 'denylist',
         reason: denied,
+        readOnlyRejection,
       };
     }
 
@@ -307,31 +389,30 @@ export class PolicyEngine {
         commandClass: parsed.class,
         binary: parsed.binary,
         ruleId: 'role-binding',
-        reason: this.explainRoleDenial(profile, parsed.class),
+        reason: this.explainRoleDenial(profile, parsed),
+        readOnlyRejection,
       };
     }
 
-    // Only an explicitly configured Admin workspace root may bypass MCP form
-    // elicitation for INLINE SFTP uploads. The file handler separately checks
-    // remote directory/file symlinks and publishes via staged SFTP rename.
-    // Client-side UI approval is not asserted or trusted by the MCP server.
-    if (approvalRequired && _toolName === 'sftp-upload' &&
+    // Independent Admin SFTP authorization is deliberately narrower than
+    // approval of general shell commands. Never bypass upstream deny rules,
+    // remote-write protections, role bindings, or the later OPA check.
+    if (approvalRequired && resource.remoteWrite &&
         parsed.class === 'destructive' && parsed.binary === 'sftp:upload' &&
+        profile.role === 'admin' && !profile.readOnly &&
+        profile.approvalPolicy !== 'deny' &&
+        /^sftp:upload --overwrite --bytes=/.test(command) &&
         approvedSftpWorkspaceRoot(command, profile)) {
-      return { decision: 'allow', commandClass: 'destructive',
-        binary: 'sftp:upload', ruleId: 'admin-sftp-workspace-scope' };
+      return { decision: 'allow', commandClass: parsed.class,
+        binary: parsed.binary, ruleId: 'admin-sftp-workspace-scope' };
     }
-
-    // Explicitly scoped 30-minute SFTP upload grants issued out-of-band from
-    // the operator-owned Mac mini config or a private grant file. Keep the
-    // command destructive and honor denylist, role binding and OPA checks.
-    if (approvalRequired && _toolName === 'sftp-upload'
-        && profile.role === 'admin' && !profile.readOnly
-        && profile.approvalPolicy !== 'deny' && parsed.class === 'destructive'
-        && parsed.binary === 'sftp:upload'
-        && approvedSftpUpload(command, profile)) {
-      return { decision: 'allow', commandClass: 'destructive',
-        binary: 'sftp:upload', ruleId: 'out-of-band-sftp-preapproval' };
+    if (approvalRequired && resource.remoteWrite &&
+        parsed.class === 'destructive' && parsed.binary === 'sftp:upload' &&
+        profile.role === 'admin' && !profile.readOnly &&
+        profile.approvalPolicy !== 'deny' &&
+        approvedSftpUpload(command, profile)) {
+      return { decision: 'allow', commandClass: parsed.class,
+        binary: parsed.binary, ruleId: 'out-of-band-sftp-preapproval' };
     }
 
     if (approvalRequired) {
@@ -344,6 +425,7 @@ export class PolicyEngine {
           binary: parsed.binary,
           ruleId: 'approval-policy',
           reason: `Profile "${profile.name}" denies ${parsed.class} commands (approvalPolicy = "deny")`,
+          readOnlyRejection,
         };
       }
       return {
@@ -352,6 +434,7 @@ export class PolicyEngine {
         binary: parsed.binary,
         ruleId: 'approval-policy',
         reason: `Profile "${profile.name}" requires approval for ${parsed.class} commands`,
+        readOnlyRejection,
       };
     }
 
@@ -360,6 +443,7 @@ export class PolicyEngine {
       commandClass: parsed.class,
       binary: parsed.binary,
       ruleId: 'default',
+      readOnlyRejection,
     };
   }
 
@@ -367,8 +451,9 @@ export class PolicyEngine {
     command: string,
     profile: Profile,
     toolName: string,
+    resource: PolicyResource = {},
   ): Promise<PolicyEvaluation> {
-    const local = this.evaluate(command, profile, toolName);
+    const local = this.evaluate(command, profile, resource);
 
     if (local.decision === 'deny') {
       return local;
@@ -379,11 +464,24 @@ export class PolicyEngine {
     }
 
     try {
-      const parsed = classifyCommand(command, profile.readOnlyExtensions ?? [], 0, profile.viewer2Packs ?? [], profile.viewer2ProbeTargets ?? []);
+      const parsed = classifyCommand(command);
+      // The path as given, plus both readings the local denylist tests, so a Rego rule
+      // can match a canonical spelling without reimplementing either here. Undefined for
+      // every tool but the SFTP ones — and for an empty path, which means no path — and
+      // JSON drops the keys then.
+      const remotePath = resource.remotePath || undefined;
       const input = {
         subject: { role: profile.role, profile: profile.name },
-        action: { tool: toolName, commandClass: parsed.class },
-        resource: { command: parsed.fullCommand, binary: parsed.binary, host: profile.host },
+        action: { tool: toolName, commandClass: local.commandClass },
+        resource: {
+          command: parsed.fullCommand,
+          binary: parsed.binary,
+          host: profile.host,
+          remotePath,
+          remoteWrite: resource.remoteWrite || undefined,
+          remotePathNormalized: remotePath === undefined ? undefined : normalizeRemotePath(remotePath),
+          remotePathWindows: remotePath === undefined ? undefined : normalizeRemotePathForWindows(remotePath),
+        },
         context: { readOnly: profile.readOnly },
       };
 
@@ -491,31 +589,42 @@ export class PolicyEngine {
    * guessed from its name, so the reason is something the operator never wrote
    * down anywhere and cannot see.
    */
-  private explainRoleDenial(profile: Profile, commandClass: CommandClass): string {
+  private explainRoleDenial(profile: Profile, parsed: ParsedCommand): string {
+    const commandClass = parsed.class;
+    let reason: string;
+
     if (profile.readOnly) {
-      return `Profile "${profile.name}" is read-only, so "${commandClass}" commands are refused. ` +
+      reason = `Profile "${profile.name}" is read-only, so "${commandClass}" commands are refused. ` +
         `Clear readOnly on the profile to allow them.`;
+    } else {
+      const group = resolveProfileGroup(profile);
+      const inferred = !profile.group;
+      const allowed = this.getAllowedClasses(profile).join(', ');
+
+      reason =
+        `Role "${profile.role}" on host group "${group}" cannot run "${commandClass}" commands ` +
+        `(allowed: ${allowed}).`;
+
+      if (inferred) {
+        // Not "defaulted to the most restrictive tier": the name is matched
+        // against prod/staging/dev first, so a profile called "staging-web" lands
+        // on staging and the old wording described a fallback that did not
+        // happen. What the operator needs to know is that nothing they wrote
+        // chose this tier.
+        reason +=
+          ` No group is set for profile "${profile.name}", so the tier was inferred from its name as "${group}".` +
+          ` Set group explicitly on the profile, or pass --group, if that is not where this host belongs.`;
+      } else {
+        reason += ` Change the profile's group, or grant the class to this role in the policy's roleBindings.`;
+      }
     }
 
-    const group = resolveProfileGroup(profile);
-    const inferred = !profile.group;
-    const allowed = this.getAllowedClasses(profile).join(', ');
-
-    let reason =
-      `Role "${profile.role}" on host group "${group}" cannot run "${commandClass}" commands ` +
-      `(allowed: ${allowed}).`;
-
-    if (inferred) {
-      // Not "defaulted to the most restrictive tier": the name is matched
-      // against prod/staging/dev first, so a profile called "staging-web" lands
-      // on staging and the old wording described a fallback that did not
-      // happen. What the operator needs to know is that nothing they wrote
-      // chose this tier.
-      reason +=
-        ` No group is set for profile "${profile.name}", so the tier was inferred from its name as "${group}".` +
-        ` Set group explicitly on the profile, or pass --group, if that is not where this host belongs.`;
-    } else {
-      reason += ` Change the profile's group, or grant the class to this role in the policy's roleBindings.`;
+    // A `safe` command refused here is often not a hard "no" — it is one
+    // spelling away from `read-only` (an argv word the grammar refused, or a
+    // shell metacharacter), and without this the reader concludes the binary is
+    // forbidden outright and never learns which spelling would have worked.
+    if (parsed.readOnlyRejection) {
+      reason += ` ${formatReadOnlyRejection(parsed.readOnlyRejection)}`;
     }
 
     return reason;
@@ -566,20 +675,68 @@ export class PolicyEngine {
    * group, the class and the allowed set; this path never got the same
    * treatment.
    */
-  private findDenyMatch(command: string): string | null {
+  private findDenyMatch(command: string, resource: PolicyResource): string | null {
     const builtIn = findForbiddenMatch(command);
     if (builtIn) {
-      return `Command matches a built-in never-allowed rule: ${builtIn}. ` +
-        `This list cannot be switched off — the [policy].denylist key adds patterns, it does not remove these.`;
+      return `Command matches a built-in never-allowed rule: ${builtIn}. ${NEVER_ALLOWED_TRAILER}`;
     }
 
-    for (const pattern of this.userPatterns) {
-      if (pattern.test(command)) {
-        return `Command matches /${pattern.source}/, a pattern from [policy].denylist in your config file. ` +
-          `Remove or narrow it there to allow this command.`;
+    // The built-in never-allowed write paths, tested against a remote path the tool
+    // declared it writes. Runs before the early return below because the defaults
+    // carry no operator denylist — this check is not the operator's to switch on.
+    if (resource.remoteWrite && resource.remotePath) {
+      const target = findNeverAllowedWriteTarget(resource.remotePath);
+      if (target !== null) {
+        return `Remote path ${quotePath(resource.remotePath)} matches a built-in never-allowed rule: ` +
+          `${neverAllowedWriteLabel(target)}. ${NEVER_ALLOWED_TRAILER}`;
+      }
+    }
+
+    // Nothing below can match: skip reading the path at all, which is the commonest
+    // config — the defaults carry no denylist.
+    if (this.compiled.patterns.length === 0) return null;
+
+    // The path is tested on its own as well as inside the command string, because for the
+    // SFTP tools that string is ours to lay out and a rule written for the path should not
+    // depend on where we put it (#230). An empty path means none was passed.
+    const remotePath = resource.remotePath || undefined;
+    const normalized = remotePath === undefined ? undefined : normalizeRemotePath(remotePath);
+    const windows = remotePath === undefined ? undefined : normalizeRemotePathForWindows(remotePath);
+    const fromConfig = 'a pattern from [policy].denylist in your config file. ' +
+      'Remove or narrow it there to allow this command.';
+    for (const { exact, caseInsensitive } of this.compiled.patterns) {
+      if (exact.test(command)) {
+        return `Command matches /${exact.source}/, ${fromConfig}`;
+      }
+      if (remotePath === undefined) continue;
+      if (exact.test(remotePath)) {
+        return `Remote path ${quotePath(remotePath)} matches /${exact.source}/, ${fromConfig}`;
+      }
+      if (normalized !== remotePath && exact.test(normalized!)) {
+        return `Remote path ${quotePath(remotePath)} (read as ${quotePath(normalized!)}) ` +
+          `matches /${exact.source}/, ${fromConfig}`;
+      }
+      // The Windows reading runs even when it string-equals the plain one, because the
+      // pattern is tested case-insensitively here and exactly above: on Windows the case
+      // variants are the same file (measured, see remote-path.ts).
+      if (caseInsensitive.test(windows!)) {
+        return `Remote path ${quotePath(remotePath)} (read as ${quotePath(windows!)}, the Windows reading) ` +
+          `matches /${caseInsensitive.source}/i, ${fromConfig}`;
       }
     }
 
     return null;
   }
+}
+
+/**
+ * A path as it may appear in a refusal, capped. The paths are caller-supplied and can be
+ * as long as `MAX_REMOTE_PATH_CHARS` (4096); the refusal is rethrown to the MCP client
+ * and written into the audit record, where the command string already carries the full
+ * spelling — so the tail gives up nothing an operator needs, and a refusal stops being
+ * the engine's most verbose sentence by an order of magnitude.
+ */
+function quotePath(path: string): string {
+  const capped = path.length > 256 ? `${path.slice(0, 253)}…` : path;
+  return JSON.stringify(capped);
 }

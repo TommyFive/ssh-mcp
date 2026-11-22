@@ -50,8 +50,10 @@ SSH MCP Server gives LLM agents the ability to execute shell commands on remote 
 
 ## Stopping a Command
 
-Six things stop a command, and they all escalate the same way on the exec channel —
-`SIGINT` immediately, `SIGTERM` after 1s, `SIGKILL` after 2s, then the channel is closed:
+Seven things stop a command. Where one reaches a command's exec channel it escalates the
+same way — `SIGINT` immediately, `SIGTERM` after 1s, `SIGKILL` after 2s, then the channel is
+closed — but the last three rows reach less than their names suggest; see the note under the
+table:
 
 | trigger | policy check | audit record |
 |---|---|---|
@@ -59,8 +61,17 @@ Six things stop a command, and they all escalate the same way on the exec channe
 | an MCP client cancelling the request | no | the failed command's own record |
 | a channel that arrives after the request already timed out | no | trace only (`ssh.exec.lateStop`) |
 | `close-session` on a background session | **no** | yes (`session:close …`, `ruleId session-release`) |
-| the session reaper (idle TTL, or `sessionBackgroundMaxMs`, 1h by default) | no | **no** |
-| connection teardown — shutdown, or the idle-connection reaper | no | **no** |
+| a config reload that closes the connection (profile removed, a connection field changed, or its bastion closing) — escalates background sessions only | no | yes (`session:close … (reload)`, one per session) |
+| the session reaper (idle TTL, or `sessionBackgroundMaxMs`, 1h by default) — escalates background sessions only | no | **no** |
+| connection teardown — shutdown, or the idle-connection reaper — escalates background sessions only | no | **no** |
+
+**A session or connection close escalates only a background session's command.** Closing an
+interactive session ends its shell and signals nothing remote. A config reload or connection
+teardown closes each of the connection's sessions as above and then ends the SSH client, and
+a one-shot command still running on that connection is not signalled at all: ending the
+client drops its channel, and dropping a channel was measured not to stop a command (#146).
+Such a command may keep running on the host until it ends by itself or is signalled there,
+for instance with `signal-process` through a profile that still reaches that host.
 
 **Nothing on that list is policy-gated, and two of them leave no record.** The first four
 are the server stopping something policy already authorised when it started, which is
@@ -69,6 +80,8 @@ caller-initiated, but it is deliberately *not* refusable: routing it through the
 engine meant a `readOnly` profile could open a background session and then be denied
 permission to close it, with no other way to stop the command for an hour. A control whose
 refusal mode is "the thing you asked me to stop keeps running" is worse than no control.
+A reload closes only the connections that the operator's edit to the config file
+invalidated, and records each session it closes the way `close-session` does.
 
 The last two rows are the ones to weigh before pointing this at something that matters: a
 background `tail -f` that passes its TTL is `SIGKILL`ed by a timer, with no tool call, no
@@ -129,24 +142,31 @@ dressed as a cleanup. There is no mode that overrides a pin, and the refusal doe
 one.
 
 **`ask-destructive` gates less than the name suggests, and `kill` is one example rather
-than the exception.** Outside the never-allowed list, five things produce the `destructive`
-class: the pattern `/rm\s+-rf?\s+\//`, a disqualifying argument on an otherwise allowlisted
-binary (`find … -delete`, `find … -exec`), a command word this process cannot resolve
-statically (`$VAR` as the command), a program handed to an interpreter this process cannot
-read (`python3 -c`, `perl -e`, `node -e`, `php -r`, and a program arriving on a pipe), and
-the two commands this server synthesises that act on the target (`sftp:upload`,
-`session:open`). **`awk` is not among them**: its program is read by none of this, so
-`awk 'BEGIN{system("...")}'` classifies `safe` exactly as it does on 2.5.1.
+than the exception.** Outside the never-allowed list, these produce the `destructive` class:
+
+- a recursive `rm` (`-r`, `-R` or `--recursive`, in any flag order) against an absolute path;
+- a disqualifying argument on an otherwise allowlisted binary (`find … -delete`, `find … -exec`);
+- a command word this process cannot resolve statically (`$VAR` as the command);
+- a program this process cannot read: one handed to an interpreter (`python3 -c`, `perl -e`,
+  `node -e`, `php -r`), one arriving on a pipe, the recipes `make` reads from a file, and the
+  remote command of `ssh`;
+- an `awk` program that writes a file, prints into a shell, or cannot be located (`-f
+  progfile`, or an option the awk implementations disagree on);
+- the two commands this server synthesises that act on the target (`sftp:upload`,
+  `session:open`).
+
+A command handed to a shell from inside another one, such as an awk `system()` call, is also
+classified as itself, so `awk 'BEGIN{system("sudo id")}'` comes out `privileged`.
 Elevation classifies `privileged` rather than `destructive`; this mode gates both. Ordinary write verbs are in none of these. Measured against the shipped classifier, all of these are `safe`,
 and `safe` raises no prompt in this mode:
 
 ```
 rm -f /etc/passwd          mv /etc/passwd /tmp/x       truncate -s0 /etc/passwd
-rm -r -f /                 rm --recursive --force /    rm -rf ~
-shred /dev/sda             systemctl stop nginx        kill -9 <pid>
+rm -rf ~                   rm -rf ./build              shred /dev/sda
+systemctl stop nginx       kill -9 <pid>
 ```
 
-So `ask-destructive` buys a prompt on elevation and on `rm -rf /path`. It does not buy one
+So `ask-destructive` buys a prompt on elevation and on a recursive `rm` of an absolute path. It does not buy one
 on writes, deletions spelled another way, service control, or signals. **`ask-all` is the
 mode that gates writes**, and it is the right default for a profile pointed at anything that
 matters. A `readOnly` profile, or a role whose bindings exclude `safe`, are the other two
@@ -207,6 +227,59 @@ Treat the ability to open an interactive session as the privilege it is:
 - A `readOnly` profile is unaffected: it holds `read-only` only, so it cannot set the alias
   in the first place.
 
+### `read-only` is granted by grammar, not by binary name
+
+A command classifies `read-only` only when every argument after the command word is
+provably data under a grammar declared for that binary (`src/policy/classifier.ts`
+`READERS`, `src/policy/reader-grammar.ts`) — not merely because the first word is on the
+allowlist. An option the grammar does not list, an abbreviation of one it does list, a
+short-option cluster containing an unlisted letter, an argument carrying an unquoted shell
+glob (`*`, `?`, `[`), or an operand shaped like something the
+binary would write to, all fall the whole command to `safe` instead of `read-only`.
+
+`read-only` is the class a `readOnly` profile is confined to, the class `viewer` holds on
+prod and staging (on dev the viewer holds `safe` too), and the class `read-command`
+requires; all of these refuse `safe` except the viewer on dev. So a command
+that used to run under the old, name-only rule can now be refused under the same profile,
+role or tool. The refusal names the rejected word, so the caller sees which spelling of the
+same command would still qualify, rather than concluding the binary is forbidden outright.
+
+`DISQUALIFYING_ARGS` is unaffected by this and still runs first: it can still raise a
+command above `safe` for every role, including `operator` and `admin`, regardless of what
+the reader's grammar accepts. The grammar only ever decides between `read-only` and `safe`.
+
+**Residual risks, recorded rather than closed:**
+
+- **The never-allowed write paths are refused in the forms the README lists.** Upload
+  tools' remote path, shell redirects, and the destinations of `tee`, `cp`, `mv`,
+  `install` and `dd of=` name the path — the two `/etc` families by prefix, so a
+  same-prefix sibling (`/etc/cronography`) over-refuses by design. Any other way of
+  writing those files (`sed -i`, `rsync`, `truncate`, cmd.exe's `copy`, `move` and
+  `robocopy`, a program an interpreter reads, a path the target computes from `cd` or
+  variables) classifies by verb, not by target, and is governed by class and approval
+  instead. `authorized_keys2` and a non-default sshd `AuthorizedKeysFile` are not on
+  the list either; the operator denylist covers them.
+- **DNS/ICMP egress.** `dig`, `nslookup`, `host`, `ping` and `traceroute` can leak small
+  amounts of data through the queries and probes they send. None of them can modify the
+  host, so they stay `read-only`; tighten them via profile policy (denylist, or omit the
+  role) if egress matters.
+- **UNC path operands on Windows.** An operand shaped like a UNC path (`\\host\share\x`)
+  passed to a reader such as `cat` or `sort` makes the Windows host authenticate to the
+  named SMB server, which can leak an NTLM credential. The host itself is not changed, so
+  this falls outside the `read-only` contract — that contract is about writes, not about an
+  outbound authentication attempt.
+- **`git status` may write to `.git/index`.** It can opportunistically refresh cached stat
+  data there when it is stale; it writes no tracked content, ref or config. A host that
+  wants to disable even that can set `GIT_OPTIONAL_LOCKS=0`.
+- **Glob characters beyond `*`, `?` and `[`.** The unquoted-glob check covers the
+  characters every POSIX shell expands. A remote login shell that is zsh with the
+  non-default `extendedglob` option set also treats `^`, `#` and `~` as glob operators, and
+  those are not checked. Keep `extendedglob` off for the account this server logs in as.
+- **The `'any'` grammar entries are unverified claims, not proofs.** No test can show a
+  binary has no write mode at all. The mitigation is that every `'any'` entry in `READERS`
+  carries a source comment naming what was checked and what was found, and an entry with no
+  such claim accepts no arguments.
+
 ## Safe Deployment Guidelines
 
 1. **Never run as root.** Create a dedicated low-privilege service account.
@@ -223,6 +296,13 @@ Treat the ability to open an interactive session as the privilege it is:
    your account, `SYSTEM` and `Administrators`, which a config under `%APPDATA%` inherits
    automatically. There the finding is reported rather than enforced — `--strictConfigAcl`
    enforces it if you want that.
+8. **Treat write access to the config file as control of the running server.** A reload
+   (the `reload-config` tool, or `SIGHUP` outside Windows) trusts the file's ownership and
+   permissions exactly as startup does: the same mode-bit check on Linux and macOS, the same
+   ACL check and flags on Windows. So the guidance in item 7 applies unchanged. What is new
+   is the timing: anyone who can write the config file can change the policy of a running
+   server without a restart, and any caller of `reload-config` can make the change take
+   effect, since the tool asks for no approval.
 
 ## Supported Versions
 
@@ -285,7 +365,7 @@ is secure.
 |-----------------|-------------|-------------------|
 | A.8.2 | Privileged access rights | RBAC roles, policy engine, approval modes, denylist |
 | A.8.5 | Secure authentication | Credential cascade, no CLI-arg secrets, keychain + SSH agent + CA cert support |
-| A.8.23 | Web filtering | `--transport http` requires bearer auth, `--rateLimit` token bucket, `--allowedHosts` Host-header allow-list |
+| A.8.23 | Web filtering | `--transport http` requires bearer auth, per-client `--rateLimit` token bucket, `--allowedHosts` Host-header allow-list |
 | A.12.4 | Logging and monitoring | Audit log with ECS fields, hash-chain option, redaction |
 | A.13.1 | Network security controls | Host key verification, frozen algorithms, ProxyJump tunnel |
 | A.14.2 | Security in development | Property tests (fast-check), SAST (Semgrep), secret scanning (gitleaks), npm provenance |

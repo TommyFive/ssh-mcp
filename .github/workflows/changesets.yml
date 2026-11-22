@@ -1,8 +1,8 @@
 name: Changesets
 
 on:
-  push:
-    branches: [main]
+  # Downstream fork: releases require manual dispatch; prevent upstream npm
+  # publishing from running automatically when integration reaches main.
   # A release can stop halfway for reasons that live outside the repository —
   # the npm trusted publisher pointing at the wrong workflow file is what did it
   # for 2.0.0. Once that is corrected there is nothing to commit, and without a
@@ -67,7 +67,7 @@ jobs:
       # lockfile, before `npm ci` runs. Taking the npm that ships with a pinned
       # Node removes a mutable reference from the publish path rather than
       # bumping it.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.x'
 
@@ -139,7 +139,7 @@ jobs:
         # And `validateChangesetsCliVersion` checks the pairing before anything
         # runs, which means a future bump of @changesets/cli back across a major
         # fails this step immediately instead of publishing and going quiet.
-        uses: changesets/action@8488615a623b1b9c987934bb89eae8af6a946ac1 # v2.1.1
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           # No --provenance: trusted publishing generates provenance
           # attestations automatically for a public package from a public repo.
@@ -246,7 +246,7 @@ jobs:
       # CycloneDX/SPDX output shape all come from the bundled npm, and the SBOM is
       # what gets signed. A Node image whose npm changes that output publishes a
       # differently-shaped SBOM under a valid signature, silently.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.x'
 
@@ -275,7 +275,13 @@ jobs:
       # `--retry-all-errors` rather than a hand-rolled loop. The registry serves a
       # published version to the CDN asynchronously, so this URL can 404 for a while
       # after `npm publish` returns; `-f` turns that into exit 22 and
-      # `--retry-all-errors` is what makes curl retry it. `registry` keeps its own loop
+      # `--retry-all-errors` is what makes curl retry it.
+      #
+      # Fifteen minutes (90 × 10 s), not five. 2.25.1 was served 76 s after publish;
+      # 2.26.0 took about 7 minutes, so a five-minute wait failed this job, the
+      # registry listing and the release check on a package npm had accepted, and
+      # the release needed a manual `gh run rerun --failed`. The wait costs nothing
+      # when npm is quick: curl stops at the first success. `registry` keeps its own loop
       # for a reason documented there (packument caching) that does not apply to a
       # tarball GET, so this does not reuse it — and note the two jobs both hang off
       # `release` and run concurrently, so neither warms the other's CDN object.
@@ -294,12 +300,16 @@ jobs:
           version="$(node -p 'require("./package.json").version')"
           name="$(node -p 'require("./package.json").name')"
 
-          curl -fsSL --retry 30 --retry-delay 10 --retry-all-errors \
+          curl -fsSL --retry 90 --retry-delay 10 --retry-all-errors \
             -o package.tgz "https://registry.npmjs.org/$name/-/$name-$version.tgz"
 
-          expected="$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
-            "https://registry.npmjs.org/$name/$version" \
-            | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).dist.integrity')"
+          # The registry metadata goes to a file and node reads it as data. Piping curl
+          # straight into node is the shape Scorecard flags as download-then-run, even
+          # though node only parsed the JSON; the file keeps the same check without it.
+          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/registry-meta.json" "https://registry.npmjs.org/$name/$version"
+          expected="$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).dist.integrity' \
+            "$RUNNER_TEMP/registry-meta.json")"
           actual="sha512-$(openssl dgst -sha512 -binary package.tgz | base64 | tr -d '\n')"
 
           if [ "$expected" != "$actual" ]; then
@@ -325,7 +335,7 @@ jobs:
           subject-path: package.tgz
           sbom-path: sbom.spdx.json
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sbom
           path: |
@@ -336,7 +346,7 @@ jobs:
       - name: Record the release tag for the asset job
         run: echo "$RELEASE_TAG" > release-tag.txt
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-tag
           path: release-tag.txt
@@ -368,7 +378,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: '{sbom,release-tag}'
           merge-multiple: true
@@ -451,7 +461,7 @@ jobs:
       # them touch node_modules. 24.x only to match the release job; unlike
       # there, no npm version is load-bearing here, and `engines` allows far
       # older.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24.x'
 
@@ -506,7 +516,7 @@ jobs:
       # of a pinned schema would have gone stale the first time that URL moved.
       #
       # Before the npm wait, not after: it takes a second, and there is no reason
-      # to spend five minutes on propagation only to fail on a malformed listing.
+      # to spend up to fifteen minutes on propagation only to fail on a malformed listing.
       - name: Validate server.json against the registry schema
         run: ./mcp-publisher validate
 
@@ -522,9 +532,10 @@ jobs:
       #   `npm view pkg@version` fetches the whole packument and resolves the
       #   version locally, and npm serves packuments with `max-age=300` while
       #   defaulting `prefer-online` to false. Attempt 1 would cache a document
-      #   that lacks the new version and attempts 2..30 could all be answered
-      #   from it — a 290-second window entirely inside the 300-second one. The
-      #   loop would report "never became visible" while npm was serving it.
+      #   that lacks the new version, and every attempt in the next 300 seconds
+      #   could be answered from it. With the 290-second loop this once had, the
+      #   whole wait fit inside that window and reported "never became visible"
+      #   while npm was serving it.
       #
       #   And the name has to come from server.json's identifier, not a literal:
       #   the identifier is what the registry resolves, so polling anything else
@@ -537,7 +548,9 @@ jobs:
           identifier="$(node -p 'require("./server.json").packages.find((p) => p.registryType === "npm").identifier')"
           version="$(node -p 'require("./package.json").version')"
           url="https://registry.npmjs.org/$identifier/$version"
-          attempts=30
+          # Fifteen minutes, matching the sbom job's tarball wait; see the
+          # 2.26.0 note there for why five was not enough.
+          attempts=90
           for i in $(seq 1 "$attempts"); do
             # Keep the reason. Discarding it made a 404, a 429, an npm outage and
             # a runner DNS failure all read as "not yet visible", on the one job

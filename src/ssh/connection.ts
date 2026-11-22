@@ -1,6 +1,6 @@
 import { Client, type ClientChannel, type ConnectConfig, type ExecOptions } from 'ssh2';
 import type { ConnectionInfo, Profile, ResolvedCredentials, ExecOpts, CommandResult, SessionOpts } from '../types.js';
-import { FROZEN_ALGORITHMS } from './algorithms.js';
+import { FROZEN_ALGORITHMS, FORWARDED_ALGORITHMS } from './algorithms.js';
 import { verifyHostKey, fingerprintPublicKey, type HostKeyMode } from './host-key.js';
 import type { Session, CloseOutcome } from './session.js';
 import { SessionManager } from './session-manager.js';
@@ -10,6 +10,11 @@ import { redactText } from '../guard/redactor.js';
 import { shellSingleQuote } from '../guard/sanitizer.js';
 import { openWithRetry } from './channel-retry.js';
 import { terminateChannel, COULD_NOT_SIGNAL } from './channel-signal.js';
+import { appendCapped, finalizeCapped } from './output-buffer.js';
+import { OperatorError } from '../errors.js';
+
+/** Fixed text: a reload-closed connection's refusal names nothing from the config. */
+export const RETIRED_BY_RELOAD = 'This connection was closed by a configuration reload; retry the call.';
 
 /**
  * What this server tells a host it is, on every channel it opens for a command.
@@ -96,7 +101,8 @@ export function stopAndDescribe(
 }
 
 export class SSHConnection {
-  readonly profile: Profile;
+  /** Replaced in place by a config reload; see replaceProfile. */
+  private currentProfile: Profile;
   private client: Client | null = null;
   private credentials: ResolvedCredentials;
   private readonly sessions: SessionManager;
@@ -110,6 +116,8 @@ export class SSHConnection {
   private knownHostsStore: Map<string, string>;
   private hostKeyMode: HostKeyMode;
   private bastionSock: ClientChannel | null;
+  /** Set by a reload that closes this connection; see retire(). */
+  private retired = false;
 
   constructor(
     profile: Profile,
@@ -118,7 +126,7 @@ export class SSHConnection {
     hostKeyMode: HostKeyMode = 'tofu',
     bastionSock?: ClientChannel,
   ) {
-    this.profile = profile;
+    this.currentProfile = profile;
     this.credentials = credentials;
     this.knownHostsStore = knownHostsStore;
     this.hostKeyMode = hostKeyMode;
@@ -164,6 +172,33 @@ export class SSHConnection {
     });
   }
 
+  /** Read live on every use: policy is evaluated against this, per command. */
+  get profile(): Profile {
+    return this.currentProfile;
+  }
+
+  /**
+   * The config-reload seam. Only a profile whose connection fields are unchanged may come
+   * through here (the registry closes the connection otherwise), so the link, the
+   * credentials and the pinned host key stay valid; policy fields and limits apply from
+   * the next call.
+   */
+  replaceProfile(p: Profile): void {
+    this.currentProfile = p;
+  }
+
+  /**
+   * The other config-reload seam: this connection is in a reload's close list, so it is
+   * terminal. A tool call that resolved it before the swap still holds it, and without
+   * this, a dropped link would be redialled with the pre-reload profile into a connection
+   * the registry no longer holds and no reload or reaper would ever reach. Every way in
+   * that could dial or open a channel goes through `ensureConnected`, which now refuses,
+   * connected or not; `close()` still works, and is what the reloader calls next.
+   */
+  retire(): void {
+    this.retired = true;
+  }
+
   /**
    * The announcement for a channel about to be opened, or nothing.
    *
@@ -187,6 +222,7 @@ export class SSHConnection {
   }
 
   async ensureConnected(): Promise<void> {
+    if (this.retired) throw new OperatorError(RETIRED_BY_RELOAD);
     if (this.isConnected()) return;
     if (this.connecting) return this.connecting;
 
@@ -278,7 +314,8 @@ export class SSHConnection {
         host: this.profile.host,
         port: this.profile.port,
         username: this.profile.user,
-        algorithms: FROZEN_ALGORITHMS as ConnectConfig['algorithms'],
+        // Over a bastion's channel, chacha20 last: see FORWARDED_ALGORITHMS (#315).
+        algorithms: (this.bastionSock ? FORWARDED_ALGORITHMS : FROZEN_ALGORITHMS) as ConnectConfig['algorithms'],
         hostVerifier: (key: Buffer) => {
           // The pin used to be checked here, as a `return false` ahead of
           // verifyHostKey. That made it reject-only: a *matching* pin fell
@@ -421,6 +458,12 @@ export class SSHConnection {
         let stdout = '';
         let stderr = '';
         const maxOutput = this.profile.maxOutputBytes;
+        // Read once per command, like maxOutput: a reload mid-stream applies to the
+        // next command, not to a buffer already trimmed the other way.
+        const truncation = this.profile.outputTruncation;
+        // Progress reports what arrived, not the buffer's length: in tail mode the
+        // buffer shrinks on every trim, and MCP progress must not go backwards.
+        let received = 0;
         let lastProgressSent = 0;
         const PROGRESS_INTERVAL = 500;
 
@@ -460,7 +503,8 @@ export class SSHConnection {
         }
 
         stream.on('data', (data: Buffer) => {
-          if (stdout.length < maxOutput) stdout += data.toString();
+          received += data.length;
+          stdout = appendCapped(stdout, data.toString(), maxOutput, truncation);
           if (opts.onProgress && Date.now() - lastProgressSent >= PROGRESS_INTERVAL) {
             lastProgressSent = Date.now();
             let tail = stdout;
@@ -469,11 +513,11 @@ export class SSHConnection {
               if (idx < 0) break;
               tail = tail.substring(idx + 1);
             }
-            opts.onProgress(stdout.length, redactText(tail.trim(), { entropyScan: true }));
+            opts.onProgress(received, redactText(tail.trim(), { entropyScan: true }));
           }
         });
         stream.stderr.on('data', (data: Buffer) => {
-          if (stderr.length < maxOutput) stderr += data.toString();
+          stderr = appendCapped(stderr, data.toString(), maxOutput, truncation);
         });
 
         stream.on('close', (code: number, signal: string) => {
@@ -483,8 +527,8 @@ export class SSHConnection {
             clearTimeout(timeoutId);
             this.lastActivity = new Date();
             resolve({
-              stdout,
-              stderr,
+              stdout: finalizeCapped(stdout, maxOutput, truncation),
+              stderr: finalizeCapped(stderr, maxOutput, truncation),
               exitCode: code,
               durationMs: Date.now() - startTime,
               profile: this.profile.name,
