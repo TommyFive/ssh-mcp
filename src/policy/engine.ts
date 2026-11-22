@@ -8,7 +8,7 @@ import type {
 } from '../types.js';
 import { classifyCommand, findForbiddenMatch, formatReadOnlyRejection } from './classifier.js';
 import { isViewer2ReadOnly } from './viewer2.js';
-import { isExtensionReadOnly } from './legacy-readonly.js';
+import { isExtensionReadOnly, isLegacyV211ReadOnly } from './legacy-readonly.js';
 import { approvedSftpUpload } from './sftp-preapproval.js';
 import { approvedSftpWorkspaceRoot } from './sftp-workspace.js';
 import { normalizeRemotePath, normalizeRemotePathForWindows } from './remote-path.js';
@@ -357,6 +357,17 @@ export class PolicyEngine {
     )) {
       parsed.class = 'read-only';
       parsed.readOnlyRejection = undefined;
+    }
+    // 2.11 downstream diagnostic profiles must retain their original
+    // read-command boundary. Upstream may recognize new readers, but a source
+    // upgrade must not grant capabilities to the 25 pre-existing profiles.
+    // This can only DEMOTE an upstream read-only result to safe; never promote
+    // destructive, privileged, or upstream-rejected commands.
+    const legacyOptIn = (profile.readOnlyExtensions?.length ?? 0) > 0 ||
+      (profile.viewer2Packs?.length ?? 0) > 0;
+    if (legacyOptIn && parsed.class === 'read-only' &&
+        !isLegacyV211ReadOnly(command, profile)) {
+      parsed.class = 'safe';
     }
     const allowedClasses = this.getAllowedClasses(profile);
     const classAllowed = allowedClasses.includes(parsed.class);

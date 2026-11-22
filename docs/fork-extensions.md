@@ -28,3 +28,20 @@ identifiers, home directories, live configuration files, or production runbooks.
 4. Use an independent operator recovery route for a staged package cutover.
    The production installation and configuration must not be changed by this
    branch's creation or testing.
+
+
+## Preserving the 2.11 reader boundary
+
+Pre-existing downstream profiles that explicitly opt in to Viewer2 or
+`readOnlyExtensions` retain the **2.11 read-only surface** even though
+upstream 2.27.1 recognizes additional readers. Newly recognized commands
+remain classified `safe` for those opted-in profiles: an admin can use the
+ordinary execution tool under its existing policy, but `read-command` and
+read-only profiles do not silently gain access. The upstream classifier,
+mandatory deny rules, and shell-grammar checks remain authoritative; this
+compatibility gate can only restrict, never permit, a command.
+
+The opt-in condition is intentional: installations with no downstream
+diagnostic configuration receive the standard upstream 2.27.1 behavior.
+Run the compatibility matrix against the deployment's private profiles before
+promoting a new version. Do not publish production configuration or the matrix.

@@ -20,6 +20,29 @@ const admin = () => makeProfile({
 });
 
 describe('ported profile extensions', () => {
+  it('does not expand the deployed 2.11 reader surface for opted-in profiles', () => {
+    const engine = new PolicyEngine();
+    const legacy = makeProfile({
+      name: 'example-viewer', role: 'viewer', group: 'dev', readOnly: true,
+      viewer2Packs: ['linux'], readOnlyExtensions: ['linux-service-diagnostics'],
+    });
+    for (const cmd of ['ss -tulpen', 'systemctl status sshd',
+      'journalctl -u sshd --no-pager -n 10', 'ping -c 1 192.0.2.1']) {
+      const result = engine.evaluate(cmd, legacy);
+      expect(result.commandClass).toBe('safe');
+      expect(result.decision).toBe('deny');
+    }
+    for (const cmd of ['ls -la /tmp', 'docker ps',
+      'systemctl status sshd --no-pager']) {
+      const result = engine.evaluate(cmd, legacy);
+      expect(result.commandClass).toBe('read-only');
+      expect(result.decision).toBe('allow');
+    }
+    expect(engine.evaluate('sudo reboot', legacy).decision).toBe('deny');
+    expect(engine.evaluate('rm -rf /tmp/example', legacy).decision).toBe('deny');
+  });
+
+
   it('is disabled by default and validates exact scoped roots', () => {
     expect(profileSchema.safeParse({ name: 'example-admin', host: 'test', user: 'tester' }).success).toBe(true);
     expect(profileSchema.safeParse({ name: 'example-admin', host: 'test', user: 'tester',
