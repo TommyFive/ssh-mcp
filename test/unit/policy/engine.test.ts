@@ -39,7 +39,7 @@ describe('Scoped time-limited admin SFTP preapproval (no client elicitation)', (
     expiresAt: new Date(now + 10 * 60_000).toISOString(), maxBytes: 2048,
   };
   const admin = makeProfile({
-    name: 'mac-mini-admin', role: 'admin', group: 'dev', readOnly: false,
+    name: 'example-admin', role: 'admin', group: 'dev', readOnly: false,
     approvalPolicy: 'ask-destructive', sftpUploadPreapproval: grant,
   });
   it('keeps destructive classification, but allows only exact preapproved upload tool+path', () => {

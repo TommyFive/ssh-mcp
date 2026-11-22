@@ -14,22 +14,12 @@
 
 ---
 
-## ChatGPT approvals + optional scoped Admin SFTP writes
+## Downstream extensions (archived branch)
 
-ChatGPT may ask the user to approve a modifying tool such as `sftp-upload`, but
-its MCP `tools/call` does not attest that UI decision to the SSH-MCP server.
-The former server-side `elicitation/create` gate is unavailable on the tested
-ChatGPT connection. See the [scoped workspace SFTP opt-in and security
-considerations](docs/admin-sftp-workspace-2026-10-08.md): only explicitly
-configured Admin inline uploads under constrained, remotely checked directories
-may skip this **second** form. Viewer profiles, destructive shell commands,
-server-side deny rules and the user's ChatGPT approval prompts are unchanged.
-
-**Production verified (2026-10-08):** The Mac mini is now opted in **only for `mac-mini-admin`**, with 64 KiB scoped inline SFTP uploads to its OpenClaw `documentation/` and `projects/` trees. Staged build `62089183` was activated using the independent-shell rollback runbook from [PR #4](https://github.com/TommyFive/ssh-mcp/pull/4); 23 profiles, a 167-byte Admin SFTP write/readback and Viewer SFTP denial were checked live. The OpenClaw `documentation/ssh-mcp-tunnel/README.md` was updated (9,610 bytes) through the new policy with audit `ruleId=admin-sftp-workspace-scope`. Keep the rollback package and config backups.
-
-## Viewer 2.0 — verified Mac mini deployment (2026-10-08)
-
-The Mac mini SSH-MCP service is running `2.11.0-readonly-extension.3` with **23 individually opted-in profiles** and passive OS-specific diagnostics. See the [production handover](docs/viewer2-production-2026-10-08.md) for roles, system-specific packs, real acceptance tests, exact-file time-limited Admin SFTP approval, recovery lessons, and the later **`O_NOFOLLOW` security fix now deployed in the Mac mini build**. The handover preserves its initial pre-upgrade snapshot, with the subsequent production-verification addendum. The [historical cutover runbook](docs/viewer2-rollout-runbook.md) is retained for evidence and recovery; do not treat it as an upgrade recipe for later versions.
+This archived branch contains the fork's optional read-only diagnostic and
+scoped Admin SFTP work. Production deployments, host inventories, account
+names, workspace locations, recovery runbooks and live configuration are
+intentionally not published. Current, maintained source is on `main`.
 
 ## Quick Start
 
@@ -42,7 +32,7 @@ npm install -g ssh-mcp
 ### Install the hardened TommyFive viewer build
 
 The `TommyFive/ssh-mcp` fork contains the argument-bounded viewer extensions
-used by the Mac mini deployment. Install the tagged build directly from GitHub:
+used by an earlier downstream diagnostic deployment. Install the tagged build directly from GitHub:
 
 ```bash
 npm install -g git+https://github.com/TommyFive/ssh-mcp.git#v2.11.0-readonly-extension.3
